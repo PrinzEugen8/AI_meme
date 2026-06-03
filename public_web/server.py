@@ -36,6 +36,7 @@ DEFAULT_ASR_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
 DEFAULT_ASR_RESOURCE = "volc.seedasr.sauc.duration"
 DEFAULT_TTS_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
 ASR_UPSTREAM_FIRST_AUDIO_STALE_MS = 8000
+ASR_FORWARD_AUDIO_GAP_WARN_MS = 3000
 
 MESSAGE_TYPE_FULL_CLIENT_REQUEST = 0x1
 MESSAGE_TYPE_AUDIO_ONLY_REQUEST = 0x2
@@ -572,6 +573,29 @@ async def _browser_to_upstream(
                     audio_bytes=len(chunk),
                     sequence=sequence + 1,
                 )
+            previous_forwarded_at = float(asr_state.get("last_forwarded_audio_at") or 0.0)
+            if previous_forwarded_at:
+                gap_ms = int(max(0, (now - previous_forwarded_at) * 1000))
+                asr_state["max_forward_audio_gap_ms"] = max(
+                    int(asr_state.get("max_forward_audio_gap_ms", 0)),
+                    gap_ms,
+                )
+                if gap_ms > ASR_FORWARD_AUDIO_GAP_WARN_MS:
+                    asr_state["large_audio_gap_count"] = int(asr_state.get("large_audio_gap_count", 0)) + 1
+                    asr_state["last_large_audio_gap_ms"] = gap_ms
+                    _log_asr_event(
+                        asr_state,
+                        started,
+                        "forwarded_audio_gap",
+                        endpoint=endpoint,
+                        resource_id=resource_id,
+                        logid=logid,
+                        gap_ms=gap_ms,
+                        audio_bytes=len(chunk),
+                        sequence=sequence + 1,
+                        large_audio_gap_count=asr_state["large_audio_gap_count"],
+                        last_client_note_reason=asr_state.get("last_client_note_reason", ""),
+                    )
             asr_state["last_audio_at"] = now
             asr_state["last_forwarded_audio_at"] = now
             sequence += 1
@@ -787,6 +811,9 @@ def _new_asr_state() -> dict[str, Any]:
         "ready_to_first_audio_ms": None,
         "stale_before_first_audio": False,
         "last_forwarded_audio_at": 0.0,
+        "max_forward_audio_gap_ms": 0,
+        "large_audio_gap_count": 0,
+        "last_large_audio_gap_ms": 0,
         "first_audio_at": 0.0,
         "last_audio_at": 0.0,
         "first_partial_at": 0.0,
@@ -1297,6 +1324,9 @@ def _log_asr_close(
             "first_forwarded_audio_ms": _state_elapsed_ms(started, state, "first_forwarded_audio_at"),
             "ready_to_first_audio_ms": state.get("ready_to_first_audio_ms"),
             "stale_before_first_audio": bool(state.get("stale_before_first_audio")),
+            "max_forward_audio_gap_ms": int(state.get("max_forward_audio_gap_ms", 0)),
+            "large_audio_gap_count": int(state.get("large_audio_gap_count", 0)),
+            "last_large_audio_gap_ms": int(state.get("last_large_audio_gap_ms", 0)),
             "last_audio_ms": _state_elapsed_ms(started, state, "last_audio_at"),
             "last_forwarded_audio_ms": _state_elapsed_ms(started, state, "last_forwarded_audio_at"),
             "first_partial_ms": _state_elapsed_ms(started, state, "first_partial_at"),

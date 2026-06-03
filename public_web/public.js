@@ -123,6 +123,7 @@ const ASR_READY_NO_AUDIO_STALE_MS = 6000;
 const ASR_VAD_FINAL_CLOSE_MS = 900;
 const ASR_VAD_PENDING_MAX_MS = 10000;
 const ASR_RECOVERY_BUFFER_MS = 10000;
+const ASR_CONTINUOUS_STREAMING = true;
 const ASR_VAD_OPEN_RMS_FLOOR = 0.012;
 const ASR_VAD_CLOSE_RMS_FLOOR = 0.008;
 const ASR_VAD_OPEN_PEAK_FLOOR = 0.045;
@@ -934,7 +935,11 @@ function setupVolcAudioPipeline(stream) {
     const sampleRate = event.inputBuffer.sampleRate || asrAudioContext?.sampleRate || 48000;
     const pcm = floatToPcm16(resampleTo16k(samples, sampleRate));
     const frameMs = (samples.length / sampleRate) * 1000;
-    processAsrVadFrame(samples, pcm, frameMs);
+    if (ASR_CONTINUOUS_STREAMING) {
+      processAsrContinuousFrame(samples, pcm, frameMs);
+    } else {
+      processAsrVadFrame(samples, pcm, frameMs);
+    }
   };
   asrSource.connect(asrProcessor);
   asrProcessor.connect(asrAudioContext.destination);
@@ -966,6 +971,46 @@ function stopVolcRecognition() {
 
 function isAsrRelayReady() {
   return Boolean(asrSocket && asrSocket.readyState === WebSocket.OPEN && asrSocket.__asrReady);
+}
+
+function processAsrContinuousFrame(samples, pcm, frameMs) {
+  if (!isNekoCallActive()) {
+    stopVolcRecognition();
+    return;
+  }
+  if (!pcm?.byteLength) return;
+  const levels = audioLevels(samples);
+  const threshold = asrVadThreshold(levels.rms);
+  const now = Date.now();
+  const voice = levels.rms >= threshold.openRms || levels.peak >= threshold.openPeak;
+
+  if (voice || levels.rms >= threshold.closeRms) {
+    asrLastVoiceAt = now;
+    asrVoiceAttackMs += frameMs;
+    if (!asrGateOpen && asrVoiceAttackMs >= ASR_VAD_ATTACK_MS) {
+      asrGateOpen = true;
+      asrAwaitingFinal = false;
+      asrTailStartedAt = 0;
+      clearAsrTailTimer();
+      clearAsrIdleCloseTimer();
+      clearAsrReadyIdleTimer();
+      sendAsrClientNote("vad_gate_open", { continuous_streaming: true });
+      el("callStatus").textContent = "正在识别";
+    }
+  } else {
+    updateAsrNoiseFloor(levels.rms);
+    asrVoiceAttackMs = 0;
+    asrSavedSilentMs += frameMs;
+    if (asrGateOpen && now - asrLastVoiceAt > ASR_VAD_HOLD_MS) {
+      asrGateOpen = false;
+      asrAwaitingFinal = false;
+      asrTailStartedAt = 0;
+      sendAsrClientNote("vad_gate_close", { continuous_streaming: true });
+      if (isNekoCallActive() && !recognitionBlocked) el("callStatus").textContent = "正在监听";
+    }
+  }
+
+  queueAsrFrame(pcm, frameMs);
 }
 
 function processAsrVadFrame(samples, pcm, frameMs) {
@@ -1182,7 +1227,7 @@ function ensureAsrRelaySocket({ reason = "speech", keepIdle = false } = {}) {
       asrReadyAt = Date.now();
       scheduleAsrSessionRotate();
       if (!asrGateOpen && !asrAwaitingFinal && !asrPendingFrames.length) {
-        if (keepIdle) scheduleAsrReadyIdleStale();
+        if (keepIdle && !ASR_CONTINUOUS_STREAMING) scheduleAsrReadyIdleStale();
         el("callStatus").textContent = "正在监听";
       } else {
         el("callStatus").textContent = asrAwaitingFinal ? "等待断句" : "正在识别";
@@ -1235,6 +1280,7 @@ function clearAsrTailTimer() {
 }
 
 function scheduleAsrIdleClose(delayMs = ASR_IDLE_DISCONNECT_MS) {
+  if (ASR_CONTINUOUS_STREAMING) return;
   clearAsrIdleCloseTimer();
   asrIdleCloseTimer = window.setTimeout(() => {
     asrIdleCloseTimer = null;
@@ -1252,6 +1298,7 @@ function clearAsrIdleCloseTimer() {
 }
 
 function scheduleAsrReadyIdleStale(delayMs = ASR_READY_NO_AUDIO_STALE_MS) {
+  if (ASR_CONTINUOUS_STREAMING) return;
   clearAsrReadyIdleTimer();
   if (!isAsrRelayReady() || asrPendingFrames.length) return;
   asrReadyIdleTimer = window.setTimeout(() => {
@@ -1273,6 +1320,7 @@ function clearAsrReadyIdleTimer() {
 }
 
 function scheduleAsrSessionRotate(delayMs = ASR_SESSION_MAX_MS) {
+  if (ASR_CONTINUOUS_STREAMING) return;
   clearAsrSessionRotateTimer();
   asrSessionRotateTimer = window.setTimeout(() => {
     asrSessionRotateTimer = null;
@@ -1288,6 +1336,7 @@ function clearAsrSessionRotateTimer() {
 }
 
 function rotateAsrSessionIfIdle() {
+  if (ASR_CONTINUOUS_STREAMING) return;
   if (!isNekoCallActive() || recognitionBlocked) return;
   if (!asrSocket || asrSocket.readyState !== WebSocket.OPEN) return;
   if (asrGateOpen || asrAwaitingFinal || asrPendingFrames.length) {
@@ -1334,8 +1383,10 @@ function finishAsrTailSession() {
   asrAwaitingFinal = false;
   asrTailStartedAt = 0;
   sendAsrClientNote("tail_finish");
-  scheduleAsrIdleClose();
-  if (isAsrRelayReady() && !asrPendingFrames.length) scheduleAsrReadyIdleStale();
+  if (!ASR_CONTINUOUS_STREAMING) {
+    scheduleAsrIdleClose();
+    if (isAsrRelayReady() && !asrPendingFrames.length) scheduleAsrReadyIdleStale();
+  }
   if (isNekoCallActive() && !recognitionBlocked) {
     el("callStatus").textContent = "正在监听";
   }
