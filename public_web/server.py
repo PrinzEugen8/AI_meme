@@ -744,6 +744,7 @@ def _full_client_request(sample_rate: int, end_window_size: int = 1200) -> bytes
             "enable_itn": True,
             "enable_punc": True,
             "show_utterances": True,
+            "result_type": "single",
             "end_window_size": end_window_size,
         },
     }
