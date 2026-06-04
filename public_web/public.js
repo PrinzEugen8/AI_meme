@@ -134,6 +134,9 @@ const ASR_VAD_OPEN_RMS_FLOOR = 0.012;
 const ASR_VAD_CLOSE_RMS_FLOOR = 0.008;
 const ASR_VAD_OPEN_PEAK_FLOOR = 0.045;
 const ASR_TURN_COALESCE_MS = 1000;
+const ASR_TURN_FAST_FLUSH_MS = 550;
+const ASR_TURN_MEDIUM_FLUSH_MS = 700;
+const ASR_TURN_SHORT_FLUSH_MS = 1150;
 const ASR_TURN_MAX_WAIT_MS = 2500;
 const ASR_TURN_MAX_ITEMS = 2;
 const ASR_SHORT_TAIL_RE = /^[吗呢吧啊呀么嘛呗噢哦喔哇嗯唔诶欸？！?！,.，。]{1,2}$/;
@@ -221,6 +224,8 @@ let lastAsrErrorAt = 0;
 let asrTurnBuffer = [];
 let asrTurnFlushTimer = null;
 let asrTurnStartedAt = 0;
+let asrTurnActiveId = "";
+let asrTurnSerial = 0;
 let confirmedDialogue = [];
 
 const el = (id) => document.getElementById(id);
@@ -1706,35 +1711,66 @@ function finalizeAsrPartial() {
 function enqueueAsrTurn(text, meta = {}) {
   const clean = String(text || "").trim();
   if (!clean) {
-    console.debug("asr turn drop", { reason: "empty", source: meta.source || "" });
+    logAsrTurnDrop("empty", { source: meta.source || "" });
     return;
   }
   if (isWeakNoise(clean)) {
-    console.debug("asr turn drop", { reason: "weak_noise", text: clean, source: meta.source || "" });
+    logAsrTurnDrop("weak_noise", { text: clean, source: meta.source || "" });
     return;
   }
   const now = Date.now();
+  const source = meta.source || "";
   if (isShortAsrTail(clean)) {
     if (!asrTurnBuffer.length) {
-      console.debug("asr turn drop", { reason: "orphan_short_tail", text: clean, source: meta.source || "" });
+      logAsrTurnDrop("orphan_short_tail", { text: clean, source });
       return;
     }
     const last = asrTurnBuffer[asrTurnBuffer.length - 1];
     last.text = joinAsrFragments(last.text, clean);
     last.at = now;
-    console.debug("asr turn merge tail", { text: clean, merged: last.text, source: meta.source || "" });
-    scheduleAsrTurnFlush(ASR_TURN_COALESCE_MS);
+    last.tailMerged = true;
+    const merged = mergeAsrTurnBuffer();
+    const waitMs = now - (asrTurnStartedAt || now);
+    const delayMs = getAsrTurnFlushDelay(merged, clean, {
+      bufferItems: asrTurnBuffer.length,
+      waitMs,
+      tailMerged: true,
+    });
+    console.debug("asr turn merge tail", { text: clean, merged, source, delay_ms: delayMs });
+    logClientEvent("asr_final_buffered", {
+      turn_id: asrTurnActiveId,
+      source,
+      reason: "tail_merged",
+      buffer_items: asrTurnBuffer.length,
+      wait_ms: waitMs,
+      delay_ms: delayMs,
+      text: merged,
+    });
+    scheduleAsrTurnFlush(delayMs);
     return;
   }
-  if (!asrTurnBuffer.length) asrTurnStartedAt = now;
-  asrTurnBuffer.push({ text: clean, at: now, source: meta.source || "" });
-  console.debug("asr turn enqueue", { text: clean, source: meta.source || "", size: asrTurnBuffer.length });
+  if (!asrTurnBuffer.length) {
+    asrTurnStartedAt = now;
+    asrTurnActiveId = nextAsrTurnId();
+  }
+  asrTurnBuffer.push({ text: clean, at: now, source });
+  const merged = mergeAsrTurnBuffer();
   const waitedMs = now - (asrTurnStartedAt || now);
-  if (asrTurnBuffer.length >= ASR_TURN_MAX_ITEMS || waitedMs >= ASR_TURN_MAX_WAIT_MS) {
-    scheduleAsrTurnFlush(0);
-    return;
-  }
-  scheduleAsrTurnFlush(ASR_TURN_COALESCE_MS);
+  const delayMs = getAsrTurnFlushDelay(merged, clean, {
+    bufferItems: asrTurnBuffer.length,
+    waitMs: waitedMs,
+    tailMerged: false,
+  });
+  console.debug("asr turn enqueue", { text: clean, merged, source, size: asrTurnBuffer.length, delay_ms: delayMs });
+  logClientEvent("asr_final_buffered", {
+    turn_id: asrTurnActiveId,
+    source,
+    buffer_items: asrTurnBuffer.length,
+    wait_ms: waitedMs,
+    delay_ms: delayMs,
+    text: merged,
+  });
+  scheduleAsrTurnFlush(delayMs);
 }
 
 function scheduleAsrTurnFlush(delayMs = ASR_TURN_COALESCE_MS) {
@@ -1756,25 +1792,37 @@ function resetAsrTurnBuffer() {
   clearAsrTurnFlushTimer();
   asrTurnBuffer = [];
   asrTurnStartedAt = 0;
+  asrTurnActiveId = "";
 }
 
 function flushAsrTurnBuffer() {
   const text = mergeAsrTurnBuffer();
+  const turnId = asrTurnActiveId;
+  const bufferItems = asrTurnBuffer.length;
+  const waitMs = asrTurnStartedAt ? Date.now() - asrTurnStartedAt : 0;
+  const source = [...new Set(asrTurnBuffer.map((item) => item.source).filter(Boolean))].join(",");
   resetAsrTurnBuffer();
   if (!text) {
-    console.debug("asr turn drop", { reason: "flush_empty" });
+    logAsrTurnDrop("flush_empty", { turn_id: turnId, buffer_items: bufferItems, wait_ms: waitMs, source });
     return;
   }
   if (isWeakNoise(text)) {
-    console.debug("asr turn drop", { reason: "flush_weak_noise", text });
+    logAsrTurnDrop("flush_weak_noise", { turn_id: turnId, buffer_items: bufferItems, wait_ms: waitMs, source, text });
     return;
   }
   if (isShortAsrTail(text)) {
-    console.debug("asr turn drop", { reason: "flush_short_tail", text });
+    logAsrTurnDrop("flush_short_tail", { turn_id: turnId, buffer_items: bufferItems, wait_ms: waitMs, source, text });
     return;
   }
-  console.debug("asr turn flush", { text });
-  handleTranscript(text).catch((error) => appendLine("system", error.message || String(error)));
+  console.debug("asr turn flush", { text, turn_id: turnId, buffer_items: bufferItems, wait_ms: waitMs });
+  logClientEvent("asr_turn_flush", {
+    turn_id: turnId,
+    buffer_items: bufferItems,
+    wait_ms: waitMs,
+    source,
+    text,
+  });
+  handleTranscript(text, { turnId }).catch((error) => appendLine("system", error.message || String(error)));
 }
 
 function mergeAsrTurnBuffer() {
@@ -1789,6 +1837,44 @@ function mergeAsrTurnBuffer() {
 
 function isShortAsrTail(text) {
   return ASR_SHORT_TAIL_RE.test(String(text || "").trim());
+}
+
+function nextAsrTurnId() {
+  asrTurnSerial += 1;
+  return `asr-${Date.now().toString(36)}-${asrTurnSerial}`;
+}
+
+function logAsrTurnDrop(reason, fields = {}) {
+  const payload = { ...fields, reason };
+  console.debug("asr turn drop", payload);
+  logClientEvent("asr_turn_drop", payload);
+}
+
+function getAsrTurnFlushDelay(mergedText, latestFragment = "", state = {}) {
+  const text = String(mergedText || "").trim();
+  const latest = String(latestFragment || "").trim();
+  const bufferItems = Number(state.bufferItems || 0);
+  const waitMs = Math.max(0, Number(state.waitMs || 0));
+  if (bufferItems >= ASR_TURN_MAX_ITEMS || waitMs >= ASR_TURN_MAX_WAIT_MS) return 0;
+  const remainingMs = Math.max(0, ASR_TURN_MAX_WAIT_MS - waitMs);
+  const weight = utteranceCharWeight(text);
+  let delayMs = ASR_TURN_MEDIUM_FLUSH_MS;
+  const completePunctuation = /[。！？?!]$/.test(text);
+  const questionTail = /[吗呢么嘛]$/.test(text);
+  const softTail = /[吧啊呀呗噢哦喔哇嗯唔诶欸]$/.test(text);
+
+  if (!text || isShortAsrTail(text) || weight <= 2) {
+    delayMs = ASR_TURN_SHORT_FLUSH_MS;
+  } else if ((state.tailMerged && weight >= 4) || (questionTail && weight >= 4) || (completePunctuation && weight >= 3)) {
+    delayMs = ASR_TURN_FAST_FLUSH_MS;
+  } else if (weight >= 12) {
+    delayMs = ASR_TURN_FAST_FLUSH_MS;
+  } else if (weight >= 6) {
+    delayMs = ASR_TURN_MEDIUM_FLUSH_MS;
+  } else if (softTail || isShortAsrTail(latest)) {
+    delayMs = ASR_TURN_SHORT_FLUSH_MS;
+  }
+  return Math.max(0, Math.min(delayMs, remainingMs));
 }
 
 function joinAsrFragments(left, right) {
@@ -2168,10 +2254,10 @@ function speechErrorMessage(error) {
   return messages[error] || `语音识别异常：${error || "unknown"}`;
 }
 
-async function handleTranscript(text) {
+async function handleTranscript(text, context = {}) {
   if (tryLocalStopAudio(text, { announce: true })) return;
   if (isWeakNekoTranscript(text)) {
-    logClientEvent("neko_gate_block", { reason: "weak_transcript", text });
+    logClientEvent("neko_gate_block", { turn_id: context.turnId || "", reason: "weak_transcript", text });
     return;
   }
   const mode = activeCallMode || settings.mode || "keyword";
@@ -2198,7 +2284,7 @@ async function handleTranscript(text) {
     }
     let decision;
     try {
-      decision = await decideMeme(text);
+      decision = await decideMeme(text, context);
     } catch (error) {
       appendLine("system", error.message || String(error));
       return;
@@ -2227,12 +2313,13 @@ async function handleTranscript(text) {
   }
   let decision;
   try {
-    decision = await decideController(text, local);
+    decision = await decideController(text, local, context);
   } catch (error) {
     appendLine("system", error.message || String(error));
     return;
   }
   logClientEvent("neko_decision", {
+    turn_id: context.turnId || "",
     action: decision.action || "",
     confidence: decisionConfidence(decision),
     reason: decision.reason || "",
@@ -2247,12 +2334,12 @@ async function handleTranscript(text) {
     if (decisionConfidence(decision) < NEKO_REPLY_MIN_CONFIDENCE && !isDirectAddressOrEmotional(text)) {
       console.debug("neko reply low confidence", decision);
     } else {
-      await speakOrQueueNekoReply(clampReplyText(decision.reply_text), decision.reason || "LLM 回复", text);
+      await speakOrQueueNekoReply(clampReplyText(decision.reply_text), decision.reason || "LLM 回复", text, context);
       return;
     }
   }
   if (shouldForceNekoFallback(text, decision)) {
-    await speakOrQueueNekoReply(clampReplyText(quickNekoFallbackReply(text)), "积极捧哏兜底", text);
+    await speakOrQueueNekoReply(clampReplyText(quickNekoFallbackReply(text)), "积极捧哏兜底", text, context);
     return;
   }
   if (decision.action === "wait") {
@@ -2348,7 +2435,7 @@ function compactMeme(meme) {
   };
 }
 
-async function decideMeme(text) {
+async function decideMeme(text, context = {}) {
   const payload = {
     trigger_transcript: text,
     recent_dialogue: recentDialogue(8),
@@ -2357,10 +2444,10 @@ async function decideMeme(text) {
   return requestJsonDecision([
     { role: "system", content: LLM_MEME_SYSTEM_PROMPT },
     { role: "user", content: JSON.stringify(payload) },
-  ], 0, 160);
+  ], 0, 160, context);
 }
 
-async function decideController(text, local) {
+async function decideController(text, local, context = {}) {
   const replyBudget = nekoReplyBudgetStatus(text);
   const contextLimit = Math.round(clampNumber(settings.aiContextMessages, 1, 24, 8));
   const candidateLimit = Math.round(clampNumber(settings.aiMemeCandidateLimit, 0, 512, 50));
@@ -2392,7 +2479,7 @@ async function decideController(text, local) {
   return requestJsonDecision([
     { role: "system", content: nekoControllerSystemPrompt() },
     { role: "user", content: JSON.stringify(payload) },
-  ], settings.aiTemperature ?? 0.65, 220);
+  ], settings.aiTemperature ?? 0.65, 220, context);
 }
 
 function nekoReplyBudgetStatus(text = "", now = Date.now()) {
@@ -2445,13 +2532,13 @@ function canStartOrdinaryNekoReply(text = "", { ignoreAudio = false } = {}) {
   return true;
 }
 
-async function speakOrQueueNekoReply(text, reason = "", transcript = "") {
+async function speakOrQueueNekoReply(text, reason = "", transcript = "", context = {}) {
   const clean = clampReplyText(text);
   if (!clean || !settings.aiReplyEnabled) return;
   if (canStartOrdinaryNekoReply(transcript)) {
     clearPendingNekoReply();
-    logClientEvent("neko_reply_played", { reason, text: transcript, reply_text: clean });
-    await speakReply(clean, reason);
+    logClientEvent("neko_reply_played", { turn_id: context.turnId || "", reason, text: transcript, reply_text: clean });
+    await speakReply(clean, reason, context);
     return;
   }
   const budget = nekoReplyBudgetStatus(transcript);
@@ -2460,9 +2547,10 @@ async function speakOrQueueNekoReply(text, reason = "", transcript = "") {
     text: clean,
     reason,
     transcript,
+    context,
     expiresAt: Date.now() + NEKO_REPLY_QUEUE_MAX_AGE_MS,
   };
-  logClientEvent("neko_reply_queued", { reason, text: transcript, reply_text: clean });
+  logClientEvent("neko_reply_queued", { turn_id: context.turnId || "", reason, text: transcript, reply_text: clean });
   schedulePendingNekoReply();
 }
 
@@ -2487,8 +2575,8 @@ async function tryPlayPendingNekoReply() {
   const item = pendingNekoReply;
   clearPendingNekoReply();
   if (!canStartOrdinaryNekoReply(item.transcript, { ignoreAudio: true })) return;
-  logClientEvent("neko_reply_played", { reason: item.reason, text: item.transcript, reply_text: item.text });
-  await speakReply(item.text, item.reason);
+  logClientEvent("neko_reply_played", { turn_id: item.context?.turnId || "", reason: item.reason, text: item.transcript, reply_text: item.text });
+  await speakReply(item.text, item.reason, item.context || {});
 }
 
 function clearPendingNekoReply() {
@@ -2499,10 +2587,17 @@ function clearPendingNekoReply() {
   }
 }
 
-async function requestJsonDecision(messages, temperature, maxTokens) {
+async function requestJsonDecision(messages, temperature, maxTokens, context = {}) {
   collectSettings();
   if (!hasLlm()) throw new Error("缺少 LLM API Key");
   const startedAt = performance.now();
+  const promptChars = llmMessagesCharCount(messages);
+  logClientEvent("llm_request_start", {
+    turn_id: context.turnId || "",
+    prompt_chars: promptChars,
+    temperature,
+    max_tokens: maxTokens,
+  });
   const response = await fetch("/relay/llm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2518,10 +2613,38 @@ async function requestJsonDecision(messages, temperature, maxTokens) {
     }),
   });
   debugRelayTiming("llm", response, startedAt);
-  if (!response.ok) throw new Error(relayDeploymentHint(response.status));
+  const relayMs = Number(response.headers.get("X-Relay-Elapsed-Ms") || 0) || null;
+  if (!response.ok) {
+    logClientEvent("llm_response_done", {
+      turn_id: context.turnId || "",
+      ok: false,
+      status: response.status,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+      relay_ms: relayMs,
+      prompt_chars: promptChars,
+    });
+    throw new Error(relayDeploymentHint(response.status));
+  }
   const data = await response.json();
   const content = data?.choices?.[0]?.message?.content;
-  return extractJsonObject(content);
+  const result = extractJsonObject(content);
+  logClientEvent("llm_response_done", {
+    turn_id: context.turnId || "",
+    ok: true,
+    status: response.status,
+    elapsed_ms: Math.round(performance.now() - startedAt),
+    relay_ms: relayMs,
+    prompt_chars: promptChars,
+  });
+  return result;
+}
+
+function llmMessagesCharCount(messages) {
+  try {
+    return (messages || []).reduce((total, message) => total + String(message?.content || "").length, 0);
+  } catch (_) {
+    return 0;
+  }
 }
 
 function resolveRelayWs(path) {
@@ -2627,7 +2750,7 @@ async function getMemeTtsObjectUrl(meme) {
   return objectUrl;
 }
 
-async function speakReply(text) {
+async function speakReply(text, reason = "", context = {}) {
   reserveNekoReplySlot();
   if (!hasTts()) {
     appendLine("ai", text);
@@ -2636,9 +2759,9 @@ async function speakReply(text) {
   }
   el("callStatus").textContent = "合成语音中";
   try {
-    const audioBlob = await requestVolcTts(text);
+    const audioBlob = await requestVolcTts(text, { purpose: "neko_reply", turnId: context.turnId || "" });
     appendLine("ai", text);
-    await playBlob(audioBlob);
+    await playBlob(audioBlob, { logTtsPlayback: true, turnId: context.turnId || "", text, reason });
   } catch (error) {
     appendLine("ai", text);
     const ok = await speakBrowserFallback(text, error);
@@ -2735,6 +2858,11 @@ function stopBrowserTts() {
 async function requestVolcTts(text, options = {}) {
   collectSettings();
   const startedAt = performance.now();
+  logClientEvent("tts_request_start", {
+    turn_id: options.turnId || "",
+    purpose: options.purpose || "",
+    text,
+  });
   const response = await fetch("/relay/volc-tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2751,9 +2879,31 @@ async function requestVolcTts(text, options = {}) {
     }),
   });
   debugRelayTiming("volc-tts", response, startedAt);
-  if (!response.ok) throw new Error(`TTS relay 请求失败：${response.status}`);
+  const relayMs = Number(response.headers.get("X-Relay-Elapsed-Ms") || 0) || null;
+  if (!response.ok) {
+    logClientEvent("tts_response_done", {
+      turn_id: options.turnId || "",
+      purpose: options.purpose || "",
+      ok: false,
+      status: response.status,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+      relay_ms: relayMs,
+      text,
+    });
+    throw new Error(`TTS relay 请求失败：${response.status}`);
+  }
   const raw = new Uint8Array(await response.arrayBuffer());
   const audioBytes = extractVolcAudio(raw);
+  logClientEvent("tts_response_done", {
+    turn_id: options.turnId || "",
+    purpose: options.purpose || "",
+    ok: true,
+    status: response.status,
+    elapsed_ms: Math.round(performance.now() - startedAt),
+    relay_ms: relayMs,
+    audio_bytes: audioBytes.byteLength,
+    text,
+  });
   return new Blob([audioBytes], { type: "audio/mpeg" });
 }
 
@@ -2841,17 +2991,32 @@ function concatUint8(chunks) {
   return out;
 }
 
-async function playUrl(url) {
+async function playUrl(url, options = {}) {
   stopAudio();
   const absoluteUrl = await resolveAudioUrl(url);
   currentAudio = new Audio(absoluteUrl);
   currentAudio.preload = "auto";
   currentAudio.setAttribute("playsinline", "");
+  const playbackStartedAt = performance.now();
   currentAudio.addEventListener("ended", () => {
+    if (options.logTtsPlayback) {
+      logClientEvent("tts_play_end", {
+        turn_id: options.turnId || "",
+        elapsed_ms: Math.round(performance.now() - playbackStartedAt),
+        text: options.text || "",
+      });
+    }
     tryPlayPendingNekoReply().catch((error) => console.debug("pending neko reply failed", error));
   }, { once: true });
   try {
     await currentAudio.play();
+    if (options.logTtsPlayback) {
+      logClientEvent("tts_play_start", {
+        turn_id: options.turnId || "",
+        reason: options.reason || "",
+        text: options.text || "",
+      });
+    }
   } catch (error) {
     appendLine("system", `音频播放失败：${error.message || error}。请点一次页面后重试，手机浏览器也要确认没有静音拦截。`);
     throw error;
@@ -2869,10 +3034,10 @@ async function resolveAudioUrl(url) {
   return objectUrl;
 }
 
-async function playBlob(blob) {
+async function playBlob(blob, options = {}) {
   const url = URL.createObjectURL(blob);
   try {
-    await playUrl(url);
+    await playUrl(url, options);
   } finally {
     if (currentAudio) currentAudio.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
   }

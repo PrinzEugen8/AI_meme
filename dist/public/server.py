@@ -84,6 +84,20 @@ async def relay_client_event(payload: dict[str, Any]) -> dict[str, bool]:
         "reply_chars",
         "reply_hash",
         "reply_preview",
+        "turn_id",
+        "source",
+        "buffer_items",
+        "wait_ms",
+        "delay_ms",
+        "elapsed_ms",
+        "relay_ms",
+        "status",
+        "ok",
+        "prompt_chars",
+        "temperature",
+        "max_tokens",
+        "purpose",
+        "audio_bytes",
     }
     for key in allowed:
         if key not in payload:
