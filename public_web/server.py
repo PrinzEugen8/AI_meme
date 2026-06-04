@@ -97,6 +97,7 @@ async def relay_client_event(payload: dict[str, Any]) -> dict[str, bool]:
         "temperature",
         "max_tokens",
         "purpose",
+        "target_language",
         "audio_bytes",
     }
     for key in allowed:
@@ -228,7 +229,7 @@ async def relay_volc_tts(payload: dict[str, Any]) -> Response:
         token = _required(payload, "access_token")
         voice = _required(payload, "voice_type")
         text = _required(payload, "text")
-        resource_id = str(payload.get("resource_id") or "volc.megatts.default")
+        resource_id = str(payload.get("resource_id") or "seed-icl-2.0")
         endpoint = str(payload.get("endpoint") or DEFAULT_TTS_ENDPOINT)
         body = {
             "user": {"uid": "public_web"},

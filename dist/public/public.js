@@ -6,6 +6,7 @@ const IDB_AUDIO_PREFIX = "audio:";
 const MEME_TTS_DB_NAME = "ai_meme_neko_public_meme_tts";
 const MEME_TTS_DB_STORE = "kv";
 const MEME_TTS_PREFIX = "meme-tts:";
+const TTS_TRANSLATION_CACHE_KEY = "ai_meme_neko_public_tts_translation_cache_v1";
 const DEFAULT_AUDIO_CACHE_PREFIX = "ai-meme-neko-default-audio-";
 const DEFAULT_AUDIO_CACHE_CONCURRENCY = 2;
 const DEFAULT_ASR_RESOURCE = "volc.seedasr.sauc.duration";
@@ -53,10 +54,11 @@ const DEFAULTS = {
   ttsAppid: "",
   ttsToken: "",
   ttsVoice: "",
-  ttsResource: "volc.megatts.default",
+  ttsResource: "seed-icl-2.0",
   ttsEndpoint: "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
   ttsEncoding: "mp3",
   ttsSampleRate: 24000,
+  ttsLanguage: "zh",
   asrApiKey: "",
   asrResource: DEFAULT_ASR_RESOURCE,
   asrEndpoint: DEFAULT_ASR_ENDPOINT,
@@ -92,6 +94,11 @@ const PROVIDERS = {
     base: "",
     model: "",
   },
+};
+
+const TTS_LANGUAGE_LABELS = {
+  zh: "中文",
+  ja: "日文",
 };
 
 const MODE_HELP = {
@@ -371,7 +378,8 @@ function collectSettings() {
     ttsAppid: el("ttsAppid").value.trim(),
     ttsToken: el("ttsToken").value.trim(),
     ttsVoice: el("ttsVoice").value.trim(),
-    ttsResource: el("ttsResource").value.trim() || "volc.megatts.default",
+    ttsResource: el("ttsResource").value.trim() || DEFAULTS.ttsResource,
+    ttsLanguage: el("ttsLanguage").value || "zh",
     asrApiKey: el("asrApiKey").value.trim(),
     asrResource: el("asrResource").value.trim() || DEFAULT_ASR_RESOURCE,
     stopTriggers: parseListInput(el("stopTriggers").value),
@@ -400,7 +408,8 @@ function renderSettings() {
   el("ttsAppid").value = settings.ttsAppid || "";
   el("ttsToken").value = settings.ttsToken || "";
   el("ttsVoice").value = settings.ttsVoice || "";
-  el("ttsResource").value = settings.ttsResource || "volc.megatts.default";
+  el("ttsResource").value = settings.ttsResource || DEFAULTS.ttsResource;
+  el("ttsLanguage").value = settings.ttsLanguage || "zh";
   el("asrApiKey").value = settings.asrApiKey || "";
   el("asrResource").value = settings.asrResource || DEFAULT_ASR_RESOURCE;
   el("stopTriggers").value = listToLines(settings.stopTriggers);
@@ -495,6 +504,9 @@ function normalizeSettings(raw = {}) {
   const merged = { ...defaultSettings(), ...raw };
   const preset = presetFor(merged.aiRhythmPreset);
   merged.mode = ["keyword", "semantic", "neko"].includes(merged.mode) ? merged.mode : "keyword";
+  merged.ttsResource = String(merged.ttsResource || "").trim();
+  if (!merged.ttsResource || merged.ttsResource === "volc.megatts.default") merged.ttsResource = DEFAULTS.ttsResource;
+  merged.ttsLanguage = ["zh", "ja"].includes(merged.ttsLanguage) ? merged.ttsLanguage : "zh";
   merged.stopTriggers = toStringList(merged.stopTriggers);
   if (!merged.stopTriggers.length) merged.stopTriggers = [...DEFAULT_STOP_TRIGGERS];
   merged.aiRhythmPreset = RHYTHM_PRESETS[merged.aiRhythmPreset] ? merged.aiRhythmPreset : "chatty";
@@ -2594,6 +2606,7 @@ async function requestJsonDecision(messages, temperature, maxTokens, context = {
   const promptChars = llmMessagesCharCount(messages);
   logClientEvent("llm_request_start", {
     turn_id: context.turnId || "",
+    purpose: context.llmPurpose || "decision",
     prompt_chars: promptChars,
     temperature,
     max_tokens: maxTokens,
@@ -2617,6 +2630,7 @@ async function requestJsonDecision(messages, temperature, maxTokens, context = {
   if (!response.ok) {
     logClientEvent("llm_response_done", {
       turn_id: context.turnId || "",
+      purpose: context.llmPurpose || "decision",
       ok: false,
       status: response.status,
       elapsed_ms: Math.round(performance.now() - startedAt),
@@ -2630,6 +2644,7 @@ async function requestJsonDecision(messages, temperature, maxTokens, context = {
   const result = extractJsonObject(content);
   logClientEvent("llm_response_done", {
     turn_id: context.turnId || "",
+    purpose: context.llmPurpose || "decision",
     ok: true,
     status: response.status,
     elapsed_ms: Math.round(performance.now() - startedAt),
@@ -2645,6 +2660,88 @@ function llmMessagesCharCount(messages) {
   } catch (_) {
     return 0;
   }
+}
+
+async function prepareTtsText(text, options = {}) {
+  const clean = String(text || "").trim();
+  if (!clean) return "";
+  const language = options.language || settings.ttsLanguage || "zh";
+  if (language !== "ja") return clean;
+  return translateTextForTts(clean, "ja", options);
+}
+
+async function translateTextForTts(text, targetLanguage, options = {}) {
+  const clean = String(text || "").trim();
+  if (!clean || targetLanguage !== "ja") return clean;
+  if (!hasLlm()) throw new Error("日文语音需要 LLM API Key 用于翻译。");
+  const cacheKey = ttsTranslationCacheKey(clean, targetLanguage);
+  const cached = ttsTranslationCacheGet(cacheKey);
+  if (cached) return cached;
+  const result = await requestJsonDecision([
+    {
+      role: "system",
+      content: "Translate the user's TTS text into natural spoken Japanese. Keep it short and suitable for direct voice synthesis. Preserve the character attitude, do not add explanations, do not use Markdown. Output JSON only: {\"text\":\"...\"}.",
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        target_language: "ja-JP",
+        text: clean,
+      }),
+    },
+  ], 0.1, Math.max(80, Math.min(260, clean.length * 3)), {
+    turnId: options.turnId || "",
+    llmPurpose: "tts_translate",
+  });
+  const translated = String(result?.text || result?.translation || "").trim();
+  if (!translated) throw new Error("日文语音翻译没有返回文本。");
+  ttsTranslationCacheSet(cacheKey, translated);
+  logClientEvent("tts_text_translated", {
+    turn_id: options.turnId || "",
+    purpose: options.purpose || "",
+    target_language: targetLanguage,
+    text: clean,
+    reply_text: translated,
+  });
+  return translated;
+}
+
+function ttsTranslationCacheKey(text, targetLanguage) {
+  const fingerprint = {
+    schema: 1,
+    target_language: targetLanguage,
+    provider: settings.llmProvider || "",
+    model: settings.llmModel || "",
+    text: String(text || "").trim(),
+  };
+  return hashString(JSON.stringify(fingerprint));
+}
+
+function loadTtsTranslationCache() {
+  try {
+    const value = JSON.parse(localStorage.getItem(TTS_TRANSLATION_CACHE_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveTtsTranslationCache(cache) {
+  try {
+    const entries = Object.entries(cache || {}).slice(-300);
+    localStorage.setItem(TTS_TRANSLATION_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch (_) {}
+}
+
+function ttsTranslationCacheGet(key) {
+  const cache = loadTtsTranslationCache();
+  return String(cache[key] || "").trim();
+}
+
+function ttsTranslationCacheSet(key, value) {
+  const cache = loadTtsTranslationCache();
+  cache[key] = String(value || "").trim();
+  saveTtsTranslationCache(cache);
 }
 
 function resolveRelayWs(path) {
@@ -2753,15 +2850,20 @@ async function getMemeTtsObjectUrl(meme) {
 async function speakReply(text, reason = "", context = {}) {
   reserveNekoReplySlot();
   if (!hasTts()) {
-    appendLine("ai", text);
-    await speakBrowserFallback(text, "未配置火山语音");
+    let fallbackText = text;
+    try {
+      fallbackText = await prepareTtsText(text, { purpose: "browser_tts_fallback", turnId: context.turnId || "" });
+    } catch (_) {}
+    appendLine("ai", fallbackText);
+    await speakBrowserFallback(fallbackText, "未配置火山语音");
     return;
   }
   el("callStatus").textContent = "合成语音中";
   try {
-    const audioBlob = await requestVolcTts(text, { purpose: "neko_reply", turnId: context.turnId || "" });
-    appendLine("ai", text);
-    await playBlob(audioBlob, { logTtsPlayback: true, turnId: context.turnId || "", text, reason });
+    const speechText = await prepareTtsText(text, { purpose: "neko_reply", turnId: context.turnId || "" });
+    const audioBlob = await requestVolcTts(speechText, { purpose: "neko_reply", turnId: context.turnId || "" });
+    appendLine("ai", speechText);
+    await playBlob(audioBlob, { logTtsPlayback: true, turnId: context.turnId || "", text: speechText, reason });
   } catch (error) {
     appendLine("ai", text);
     const ok = await speakBrowserFallback(text, error);
@@ -2870,7 +2972,7 @@ async function requestVolcTts(text, options = {}) {
       appid: settings.ttsAppid,
       access_token: settings.ttsToken,
       voice_type: settings.ttsVoice,
-      resource_id: settings.ttsResource || "volc.megatts.default",
+      resource_id: settings.ttsResource || DEFAULTS.ttsResource,
       endpoint: DEFAULTS.ttsEndpoint,
       text,
       sample_rate: 24000,
@@ -3215,7 +3317,8 @@ async function testTts() {
     return;
   }
   try {
-    const blob = await requestVolcTts(text);
+    const speechText = await prepareTtsText(text, { purpose: "tts_test" });
+    const blob = await requestVolcTts(speechText, { purpose: "tts_test" });
     setResult("ttsResult", "可用，正在播放。", true);
     await playBlob(blob);
   } catch (error) {
@@ -3238,11 +3341,14 @@ function memeTtsEligible(meme) {
 function memeTtsCacheKey(meme) {
   if (!memeTtsEligible(meme)) return "";
   const fingerprint = {
-    schema: 1,
+    schema: 2,
     meme_id: meme.id,
     voice_text: String(meme.voice_text || "").trim(),
+    tts_language: settings.ttsLanguage || "zh",
+    llm_provider: settings.ttsLanguage === "ja" ? settings.llmProvider || "" : "",
+    llm_model: settings.ttsLanguage === "ja" ? settings.llmModel || "" : "",
     voice_type: settings.ttsVoice || "",
-    resource_id: settings.ttsResource || "volc.megatts.default",
+    resource_id: settings.ttsResource || DEFAULTS.ttsResource,
     endpoint: DEFAULTS.ttsEndpoint,
     sample_rate: 24000,
     speed_ratio: 1,
@@ -3386,11 +3492,12 @@ async function updateMemeTtsSummary() {
   const node = el("memeTtsSummary");
   if (!node) return;
   const eligible = memes.filter(memeTtsEligible);
+  const language = TTS_LANGUAGE_LABELS[settings.ttsLanguage || "zh"] || "中文";
   let cached = 0;
   for (const meme of eligible) {
     if (await memeTtsGet(memeTtsCacheKey(meme))) cached += 1;
   }
-  node.textContent = `可预制梗语音 ${eligible.length} 条，当前音色已缓存 ${cached} 条。预制语音只保存在这个浏览器本地。`;
+  node.textContent = `可预制梗语音 ${eligible.length} 条，当前音色/${language}已缓存 ${cached} 条。预制语音只保存在这个浏览器本地。`;
 }
 
 async function prebuildMemeTts({ force = false } = {}) {
@@ -3415,7 +3522,8 @@ async function prebuildMemeTts({ force = false } = {}) {
     }
     setResult("memeTtsResult", `预制中 ${done + failed + skipped + 1}/${candidates.length}：${meme.title || meme.id}`);
     try {
-      const blob = await requestVolcTts(meme.voice_text, { purpose: "meme_prebuild", memeId: meme.id });
+      const speechText = await prepareTtsText(meme.voice_text, { purpose: "meme_prebuild", memeId: meme.id });
+      const blob = await requestVolcTts(speechText, { purpose: "meme_prebuild", memeId: meme.id });
       await memeTtsSet(key, blob);
       done += 1;
     } catch (error) {

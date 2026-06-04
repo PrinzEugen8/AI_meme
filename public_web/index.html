@@ -134,7 +134,14 @@
             </label>
             <label>
               <span>Resource ID</span>
-              <input id="ttsResource" type="text" autocomplete="off" />
+              <input id="ttsResource" type="text" autocomplete="off" placeholder="seed-icl-2.0" />
+            </label>
+            <label>
+              <span>语音语言</span>
+              <select id="ttsLanguage">
+                <option value="zh">中文原文</option>
+                <option value="ja">日文翻译</option>
+              </select>
             </label>
             <div class="toolbar">
               <button id="testTts" class="button" type="button">测试 TTS</button>
