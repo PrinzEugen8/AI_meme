@@ -152,6 +152,8 @@ const SPEECH_NETWORK_MAX_RETRIES = 3;
 const SPEECH_NETWORK_RETRY_MS = 1800;
 const SPEECH_MOBILE_RESTART_MS = 1800;
 const SPEECH_DESKTOP_RESTART_MS = 1200;
+const PARTIAL_TRIGGER_DUPLICATE_MS = 3500;
+const PARTIAL_SEMANTIC_LLM_RETRY_MS = 1200;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let settings = loadSettings();
@@ -233,6 +235,7 @@ let asrTurnFlushTimer = null;
 let asrTurnStartedAt = 0;
 let asrTurnActiveId = "";
 let asrTurnSerial = 0;
+let partialTriggerState = resetPartialTriggerState();
 let confirmedDialogue = [];
 
 const el = (id) => document.getElementById(id);
@@ -811,6 +814,177 @@ function chooseLocalMeme(text) {
   return pool[pool.length - 1];
 }
 
+function resetPartialTriggerState() {
+  return {
+    mode: "",
+    normalizedText: "",
+    memeId: "",
+    kind: "",
+    timestamp: 0,
+    pendingLlm: null,
+    pendingNorm: "",
+    pendingStartedAt: 0,
+  };
+}
+
+async function handlePartialTranscript(text) {
+  const mode = activeCallMode || settings.mode || "keyword";
+  if (!callActive || mode === "neko") return;
+  const clean = String(text || "").trim();
+  const norm = normalizeText(clean);
+  if (!clean || !norm || isWeakNoise(clean)) return;
+  logClientEvent("speech_partial_seen", { text: clean });
+  if (mode === "keyword") {
+    await handleKeywordPartial(clean, norm);
+    return;
+  }
+  if (mode === "semantic") {
+    await handleSemanticPartial(clean, norm);
+  }
+}
+
+async function handleKeywordPartial(text, norm) {
+  const match = bestPartialLocalMatch(text, { allowTriggers: true });
+  if (!match) return;
+  if (isDuplicatePartialTrigger({ mode: "keyword", norm, memeId: match.id, kind: match._kind })) return;
+  markPartialTriggered({ mode: "keyword", norm, memeId: match.id, kind: match._kind });
+  logClientEvent("keyword_partial_match", {
+    meme_id: match.id,
+    match_kind: match._kind,
+    reason: match._phrase || "",
+    text,
+  });
+  await playMeme(match, "关键词命中", { source: "partial", matchKind: match._kind, text });
+}
+
+async function handleSemanticPartial(text, norm) {
+  const direct = bestPartialLocalMatch(text, { allowTriggers: false });
+  if (direct) {
+    if (isDuplicatePartialTrigger({ mode: "semantic", norm, memeId: direct.id, kind: "direct" })) return;
+    markPartialTriggered({ mode: "semantic", norm, memeId: direct.id, kind: "direct" });
+    logClientEvent("semantic_partial_direct_match", {
+      meme_id: direct.id,
+      match_kind: direct._kind,
+      reason: direct._phrase || "",
+      text,
+    });
+    await playMeme(direct, "直通触发", { source: "partial", matchKind: direct._kind, text });
+    return;
+  }
+  const trigger = bestPartialLocalMatch(text, { allowTriggers: true, directOnly: false });
+  if (!trigger || trigger._kind !== "trigger") return;
+  if (!hasLlm() || relayBackendOk === false) return;
+  if (isDuplicatePartialTrigger({ mode: "semantic", norm, memeId: trigger.id, kind: "trigger" })) return;
+  if (shouldSkipSemanticPartialLlm(norm)) return;
+  markPartialTriggered({ mode: "semantic", norm, memeId: trigger.id, kind: "trigger_llm_pending" });
+  partialTriggerState.pendingNorm = norm;
+  partialTriggerState.pendingStartedAt = Date.now();
+  const startedAt = performance.now();
+  logClientEvent("semantic_partial_llm_start", {
+    meme_id: trigger.id,
+    match_kind: trigger._kind,
+    reason: trigger._phrase || "",
+    text,
+  });
+  const pending = decideMeme(text, { llmPurpose: "semantic_partial" });
+  partialTriggerState.pendingLlm = pending;
+  try {
+    const decision = await pending;
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    logClientEvent("semantic_partial_llm_done", {
+      action: decision.action || "",
+      confidence: decisionConfidence(decision),
+      elapsed_ms: elapsedMs,
+      meme_id: decision.meme_id || "",
+      text,
+    });
+    if (decision.action === "play_meme" && validMemeId(decision.meme_id)) {
+      const meme = memes.find((item) => item.id === decision.meme_id);
+      markPartialTriggered({ mode: "semantic", norm, memeId: meme.id, kind: "semantic_llm" });
+      await playMeme(meme, decision.reason || "LLM 接梗", { source: "partial_llm", matchKind: "semantic_llm", text });
+    }
+  } catch (error) {
+    logClientEvent("semantic_partial_llm_done", {
+      ok: false,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+      reason: error.message || String(error),
+      text,
+    });
+  } finally {
+    if (partialTriggerState.pendingLlm === pending) {
+      partialTriggerState.pendingLlm = null;
+      partialTriggerState.pendingNorm = "";
+      partialTriggerState.pendingStartedAt = 0;
+    }
+  }
+}
+
+function bestPartialLocalMatch(text, { allowTriggers = true, directOnly = false } = {}) {
+  const scored = [];
+  for (const meme of memes) {
+    const match = partialMatchScore(text, meme, { allowTriggers, directOnly });
+    if (match.score > 0) scored.push({ ...meme, _score: match.score, _phrase: match.phrase, _kind: match.kind });
+  }
+  scored.sort((a, b) => (b._score + (b.priority || 0) / 1000) - (a._score + (a.priority || 0) / 1000));
+  return scored[0] || null;
+}
+
+function partialMatchScore(text, meme, { allowTriggers = true, directOnly = false } = {}) {
+  const groups = [["direct", meme.direct_triggers || [], 5]];
+  if (allowTriggers && !directOnly) groups.push(["trigger", meme.triggers || [], 4]);
+  for (const [kind, phrases, score] of groups) {
+    for (const phrase of phrases) {
+      if (containsPhrase(text, phrase)) return { kind, phrase, score: score + Math.min(0.5, String(phrase).length * 0.02) };
+    }
+  }
+  return { score: 0 };
+}
+
+function isDuplicatePartialTrigger({ mode, norm, memeId, kind }) {
+  const now = Date.now();
+  if (!partialTriggerState.timestamp || now - partialTriggerState.timestamp > PARTIAL_TRIGGER_DUPLICATE_MS) return false;
+  if (partialTriggerState.mode !== mode) return false;
+  if (memeId && partialTriggerState.memeId === memeId) return true;
+  if (partialTriggerState.normalizedText && norm) {
+    if (partialTriggerState.normalizedText === norm) return true;
+    if (norm.includes(partialTriggerState.normalizedText) || partialTriggerState.normalizedText.includes(norm)) return true;
+  }
+  return Boolean(kind && partialTriggerState.kind === kind && partialTriggerState.normalizedText === norm);
+}
+
+function markPartialTriggered({ mode, norm, memeId, kind }) {
+  partialTriggerState = {
+    ...partialTriggerState,
+    mode,
+    normalizedText: norm,
+    memeId: memeId || "",
+    kind: kind || "",
+    timestamp: Date.now(),
+  };
+}
+
+function shouldSkipSemanticPartialLlm(norm) {
+  const pendingNorm = partialTriggerState.pendingNorm;
+  if (!partialTriggerState.pendingLlm || !pendingNorm) return false;
+  if (pendingNorm === norm || norm.includes(pendingNorm) || pendingNorm.includes(norm)) return true;
+  return Date.now() - partialTriggerState.pendingStartedAt < PARTIAL_SEMANTIC_LLM_RETRY_MS;
+}
+
+function shouldSkipFinalAfterPartial(text) {
+  const mode = activeCallMode || settings.mode || "keyword";
+  if (!["keyword", "semantic"].includes(mode)) return false;
+  const norm = normalizeText(text);
+  if (!norm || !partialTriggerState.timestamp) return false;
+  if (Date.now() - partialTriggerState.timestamp > PARTIAL_TRIGGER_DUPLICATE_MS) return false;
+  if (partialTriggerState.mode !== mode) return false;
+  if (partialTriggerState.normalizedText === norm) return true;
+  if (partialTriggerState.normalizedText && (norm.includes(partialTriggerState.normalizedText) || partialTriggerState.normalizedText.includes(norm))) return true;
+  const match = mode === "keyword"
+    ? bestPartialLocalMatch(text, { allowTriggers: true })
+    : bestPartialLocalMatch(text, { allowTriggers: true });
+  return Boolean(match && partialTriggerState.memeId && match.id === partialTriggerState.memeId);
+}
+
 function markSpeechActivity() {
   lastSpeechAt = Date.now();
   speechNetworkErrorCount = 0;
@@ -871,6 +1045,7 @@ function enterCallScreen() {
   confirmedDialogue = [];
   speechNetworkErrorCount = 0;
   speechNetworkFailureNotified = false;
+  partialTriggerState = resetPartialTriggerState();
   resetAsrTextState();
   el("callStatus").textContent = "准备通话";
   appendLine("ai", "我在，开始吧。");
@@ -887,6 +1062,7 @@ function stopCall() {
   stopLocalMicKeepalive();
   stopVolcRecognition();
   clearPendingNekoReply();
+  partialTriggerState = resetPartialTriggerState();
   stopAudio();
   callScreen.classList.add("hidden");
   preCall.classList.remove("hidden");
@@ -904,6 +1080,7 @@ function switchActiveCallMode(mode) {
   recognitionManualStop = false;
   speechNetworkErrorCount = 0;
   speechNetworkFailureNotified = false;
+  partialTriggerState = resetPartialTriggerState();
   resetAsrTextState();
   partialLine = null;
   if (isNekoCallActive()) {
@@ -2172,9 +2349,14 @@ function startRecognition() {
       }
       if (result.isFinal) {
         addUserFinal(text);
+        if (shouldSkipFinalAfterPartial(text)) {
+          logClientEvent("speech_final_skip_partial_duplicate", { reason: "partial_duplicate", text });
+          continue;
+        }
         handleTranscript(text).catch((error) => appendLine("system", error.message || String(error)));
       } else {
         addUserPartial(text);
+        handlePartialTranscript(text).catch((error) => console.debug("partial transcript failed", error));
       }
     }
   };
@@ -2800,17 +2982,39 @@ function extractJsonObject(content) {
   throw new Error("LLM 没有返回可解析 JSON");
 }
 
-async function playMeme(meme, reason = "") {
+async function playMeme(meme, reason = "", meta = {}) {
   if (!meme) return;
   const now = Date.now();
   const cooldown = Number(meme.cooldown_ms || 1200);
   if (now - (lastPlayedAt.get(meme.id) || 0) < cooldown) return;
   lastPlayedAt.set(meme.id, now);
+  const startedAt = performance.now();
+  logClientEvent("meme_play_start", {
+    meme_id: meme.id,
+    match_kind: meta.matchKind || "",
+    source: meta.source || "",
+    reason,
+    text: meta.text || "",
+  });
   appendLine("ai", reason ? "哼，接住了。" : "哼，接住了。");
   lastNekoReplyAt = Date.now();
   const playbackUrl = await resolveMemePlaybackUrl(meme);
   if (!playbackUrl) return;
-  await playUrl(playbackUrl);
+  logClientEvent("meme_play_resolve_done", {
+    meme_id: meme.id,
+    match_kind: meta.matchKind || "",
+    source: meta.source || "",
+    cache_hit: /^blob:/i.test(String(playbackUrl || "")),
+    elapsed_ms: Math.round(performance.now() - startedAt),
+    text: meta.text || "",
+  });
+  await playUrl(playbackUrl, {
+    logMemePlayback: true,
+    memeId: meme.id,
+    matchKind: meta.matchKind || "",
+    source: meta.source || "",
+    text: meta.text || "",
+  });
 }
 
 async function resolveMemePlaybackUrl(meme) {
@@ -3112,6 +3316,14 @@ async function playUrl(url, options = {}) {
   }, { once: true });
   try {
     await currentAudio.play();
+    if (options.logMemePlayback) {
+      logClientEvent("meme_play_audio_start", {
+        meme_id: options.memeId || "",
+        match_kind: options.matchKind || "",
+        source: options.source || "",
+        text: options.text || "",
+      });
+    }
     if (options.logTtsPlayback) {
       logClientEvent("tts_play_start", {
         turn_id: options.turnId || "",
