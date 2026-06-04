@@ -66,6 +66,37 @@ async def relay_health() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.post("/relay/client-event")
+async def relay_client_event(payload: dict[str, Any]) -> dict[str, bool]:
+    safe: dict[str, Any] = {
+        "route": "client_event",
+        "event": str(payload.get("event") or "client_event")[:80],
+    }
+    allowed = {
+        "mode",
+        "rhythm",
+        "action",
+        "confidence",
+        "reason",
+        "text_chars",
+        "text_hash",
+        "text_preview",
+        "reply_chars",
+        "reply_hash",
+        "reply_preview",
+    }
+    for key in allowed:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, (int, float, bool)):
+            safe[key] = value
+        else:
+            safe[key] = str(value or "")[:160]
+    _write_relay_log(safe)
+    return {"ok": True}
+
+
 async def _http_client() -> Any:
     global _HTTP_CLIENT
     client = _HTTP_CLIENT
@@ -273,8 +304,12 @@ async def relay_volc_asr(client: WebSocket) -> None:
     resource_id = str(start.get("resource_id") or DEFAULT_ASR_RESOURCE).strip()
     sample_rate = int(start.get("sample_rate") or 16000)
     end_window_size = int(start.get("end_window_size") or 1200)
+    continuous_streaming = bool(start.get("continuous_streaming"))
+    packet_target_ms = int(start.get("packet_target_ms") or 0)
     start_reason = str(start.get("reason") or "speech").strip()[:80] or "speech"
     asr_state["client_start_reason"] = start_reason
+    asr_state["continuous_streaming"] = continuous_streaming
+    asr_state["packet_target_ms"] = packet_target_ms
     if "reconnect" in start_reason or "rotate" in start_reason:
         asr_state["reconnect_reason"] = start_reason
     _log_asr_event(
@@ -285,6 +320,8 @@ async def relay_volc_asr(client: WebSocket) -> None:
         resource_id=resource_id,
         sample_rate=sample_rate,
         end_window_size=end_window_size,
+        continuous_streaming=continuous_streaming,
+        packet_target_ms=packet_target_ms,
         client_start_reason=start_reason,
         has_api_key=bool(api_key),
     )
@@ -526,15 +563,22 @@ async def _browser_to_upstream(
                     audio_bytes=len(chunk),
                     audio_bytes_in=asr_state["audio_bytes_in"],
                 )
-            if _is_near_zero_pcm16(chunk):
+            near_zero = _is_near_zero_pcm16(chunk)
+            if near_zero and not asr_state.get("continuous_streaming"):
                 asr_state["dropped_zero_audio_bytes"] = int(asr_state.get("dropped_zero_audio_bytes", 0)) + len(chunk)
                 continue
+            if near_zero:
+                asr_state["near_zero_audio_bytes_forwarded"] = int(asr_state.get("near_zero_audio_bytes_forwarded", 0)) + len(chunk)
             now = perf_counter()
             if not asr_state.get("first_forwarded_audio_at"):
                 ready_at = float(asr_state.get("upstream_ready_at") or 0.0)
                 ready_to_first_audio_ms = int(max(0, (now - ready_at) * 1000)) if ready_at else None
                 asr_state["ready_to_first_audio_ms"] = ready_to_first_audio_ms
-                if ready_to_first_audio_ms is not None and ready_to_first_audio_ms > ASR_UPSTREAM_FIRST_AUDIO_STALE_MS:
+                if (
+                    ready_to_first_audio_ms is not None
+                    and ready_to_first_audio_ms > ASR_UPSTREAM_FIRST_AUDIO_STALE_MS
+                    and not asr_state.get("continuous_streaming")
+                ):
                     asr_state["stale_before_first_audio"] = True
                     asr_state["client_stop_reason"] = asr_state.get("client_stop_reason") or "server_stale_before_first_audio"
                     message_text = "火山 ASR ready 后空闲过久，正在换新连接。"
@@ -600,6 +644,7 @@ async def _browser_to_upstream(
             asr_state["last_forwarded_audio_at"] = now
             sequence += 1
             asr_state["audio_bytes_forwarded"] = int(asr_state.get("audio_bytes_forwarded", 0)) + len(chunk)
+            asr_state["forwarded_packet_count"] = int(asr_state.get("forwarded_packet_count", 0)) + 1
             await upstream.send(_audio_packet(chunk, sequence=sequence))
         elif message.get("text"):
             try:
@@ -803,6 +848,10 @@ def _new_asr_state() -> dict[str, Any]:
         "audio_bytes_in": 0,
         "audio_bytes_forwarded": 0,
         "dropped_zero_audio_bytes": 0,
+        "near_zero_audio_bytes_forwarded": 0,
+        "forwarded_packet_count": 0,
+        "continuous_streaming": False,
+        "packet_target_ms": 0,
         "upstream_connect_started_at": 0.0,
         "upstream_connect_at": 0.0,
         "upstream_init_sent_at": 0.0,
@@ -1347,6 +1396,10 @@ def _log_asr_close(
             "audio_bytes_in": int(state.get("audio_bytes_in", 0)),
             "audio_bytes_forwarded": int(state.get("audio_bytes_forwarded", 0)),
             "dropped_zero_audio_bytes": int(state.get("dropped_zero_audio_bytes", 0)),
+            "near_zero_audio_bytes_forwarded": int(state.get("near_zero_audio_bytes_forwarded", 0)),
+            "forwarded_packet_count": int(state.get("forwarded_packet_count", 0)),
+            "continuous_streaming": bool(state.get("continuous_streaming")),
+            "packet_target_ms": int(state.get("packet_target_ms", 0)),
             "billable_audio_ms_est": int(int(state.get("audio_bytes_forwarded", 0)) / 32),
             "partial_count": int(state.get("partial_count", 0)),
             "final_count": int(state.get("final_count", 0)),
