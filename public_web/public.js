@@ -725,9 +725,10 @@ function utteranceCharWeight(text) {
 function isWeakNekoTranscript(text) {
   const clean = String(text || "").trim();
   if (!clean) return true;
-  if (/^[\W_]+$/u.test(clean)) return true;
+  const weight = utteranceCharWeight(clean);
+  if (weight <= 0) return true;
   if (isShortAsrTail(clean) || isWeakNoise(clean)) return true;
-  return utteranceCharWeight(clean) <= 1;
+  return weight <= 1;
 }
 
 function isDirectAddressOrEmotional(text) {
