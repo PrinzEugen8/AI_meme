@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI接梗机 公网 BYOK 版</title>
+    <link rel="stylesheet" href="./public.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="preCall" class="screen pre-call">
+        <div class="avatar-ring">
+          <img src="./assets/call/neko-avatar.png" alt="AI猫娘头像" />
+        </div>
+        <div class="intro-copy">
+          <h1>AI接梗机</h1>
+          <p>关键词版直接用，AI版填自己的模型参数。</p>
+        </div>
+        <button id="startCall" class="call-button start" type="button">
+          <span class="phone-icon" aria-hidden="true"></span>
+          开始通话
+        </button>
+        <div id="supportNotice" class="support-notice"></div>
+        <button id="settingsOpenTop" class="button setup-cta" type="button">设置 AI 参数</button>
+      </section>
+
+      <section id="callScreen" class="screen call-screen hidden">
+        <header class="call-header">
+          <div>
+            <strong id="callStatus">正在通话</strong>
+            <span id="modeStatus">关键词触发</span>
+          </div>
+          <button id="settingsOpenCall" class="admin-link" type="button">设置</button>
+        </header>
+
+        <div class="stage">
+          <img class="neko-bust" src="./assets/call/neko-bust.png" alt="AI猫娘半身像" />
+          <div class="dialogue-box">
+            <div id="dialogueLog" class="dialogue-log" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <footer class="call-footer">
+          <button id="stopCall" class="call-button stop" type="button">
+            <span class="hang-icon" aria-hidden="true"></span>
+            结束通话
+          </button>
+        </footer>
+      </section>
+    </main>
+
+    <aside id="settingsPanel" class="settings-panel" aria-hidden="true">
+      <div class="settings-card">
+        <header class="settings-head">
+          <div>
+            <h2>公网版设置</h2>
+            <p>配置只保存在这个浏览器里，不会上传到你的服务器。</p>
+          </div>
+          <button id="settingsClose" class="icon-link" type="button" aria-label="关闭设置">×</button>
+        </header>
+
+        <section class="setup-block setup-static" id="modeSettingsBlock">
+          <h3>运行版本</h3>
+          <div class="setup-body">
+            <div class="segmented">
+              <button type="button" data-mode="keyword">关键词触发</button>
+              <button type="button" data-mode="semantic">语义理解</button>
+              <button type="button" data-mode="neko">AI猫娘</button>
+            </div>
+            <p id="modeHelp" class="hint"></p>
+            <p id="relayStatus" class="hint"></p>
+          </div>
+        </section>
+
+        <details class="setup-block" id="localAsrBlock">
+          <summary>本地 ASR</summary>
+          <div class="setup-body">
+            <p id="localAsrStatus" class="hint"></p>
+          </div>
+        </details>
+
+        <details class="setup-block" id="llmSettingsBlock">
+          <summary>LLM 设置</summary>
+          <div class="setup-body">
+            <label>
+              <span>供应商</span>
+              <select id="llmProvider">
+                <option value="volc_ark">火山方舟豆包</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="custom">自定义 OpenAI-compatible</option>
+              </select>
+            </label>
+            <label>
+              <span>API Base</span>
+              <input id="llmBase" type="url" autocomplete="off" />
+            </label>
+            <label>
+              <span>Model</span>
+              <input id="llmModel" type="text" autocomplete="off" />
+            </label>
+            <label>
+              <span id="llmKeyLabel">火山方舟 API Key</span>
+              <input id="llmKey" type="password" autocomplete="off" placeholder="只保存在本机浏览器" />
+            </label>
+            <div class="toolbar">
+              <button id="testLlm" class="button" type="button">测试 LLM</button>
+              <span id="llmResult" class="result-line"></span>
+            </div>
+          </div>
+        </details>
+
+        <details class="setup-block" id="volcSettingsBlock">
+          <summary>火山语音 ASR / TTS</summary>
+          <div class="setup-body">
+            <label>
+              <span>AppID</span>
+              <input id="ttsAppid" type="text" autocomplete="off" />
+            </label>
+            <label>
+              <span>Access Token</span>
+              <input id="ttsToken" type="password" autocomplete="off" placeholder="火山 TTS 合成用" />
+            </label>
+            <label>
+              <span>ASR API Key</span>
+              <input id="asrApiKey" type="password" autocomplete="off" placeholder="豆包语音新版控制台 API Key，与 LLM Key 不同" />
+            </label>
+            <label>
+              <span>ASR Resource ID</span>
+              <input id="asrResource" type="text" autocomplete="off" />
+            </label>
+            <label>
+              <span>音色 ID</span>
+              <input id="ttsVoice" type="text" autocomplete="off" placeholder="例如 S_xxxxx" />
+            </label>
+            <label>
+              <span>Resource ID</span>
+              <input id="ttsResource" type="text" autocomplete="off" />
+            </label>
+            <div class="toolbar">
+              <button id="testTts" class="button" type="button">测试 TTS</button>
+              <span id="ttsResult" class="result-line"></span>
+            </div>
+          </div>
+        </details>
+
+        <details class="setup-block" id="aiReplySettingsBlock">
+          <summary>AI猫娘回复</summary>
+          <div class="setup-body">
+            <label class="switch-line wide-field">
+              <input id="aiReplyEnabled" type="checkbox" />
+              <span>启用 AI猫娘回复</span>
+            </label>
+            <label class="wide-field">
+              <span>人格与说话风格</span>
+              <textarea id="aiPersona" rows="5" spellcheck="false"></textarea>
+            </label>
+            <label>
+              <span>回复方式</span>
+              <select id="aiRhythmPreset">
+                <option value="quiet">安静观察</option>
+                <option value="balanced">均衡陪聊</option>
+                <option value="chatty">更嘴碎</option>
+              </select>
+            </label>
+            <label>
+              <span>最大字数</span>
+              <input id="aiMaxChars" type="number" min="6" max="200" />
+            </label>
+            <label>
+              <span>冷却秒数</span>
+              <input id="aiCooldown" type="number" min="0" step="0.5" />
+            </label>
+            <label>
+              <span>温度</span>
+              <input id="aiTemperature" type="number" min="0" max="2" step="0.05" />
+            </label>
+            <label>
+              <span>上下文条数</span>
+              <input id="aiContextMessages" type="number" min="1" max="24" />
+            </label>
+            <label>
+              <span>梗候选上限</span>
+              <input id="aiMemeCandidateLimit" type="number" min="0" max="512" />
+            </label>
+            <label class="switch-line">
+              <input id="aiMemoryEnabled" type="checkbox" />
+              <span>使用本地轻量记忆</span>
+            </label>
+            <label>
+              <span>记忆条数</span>
+              <input id="aiMemoryLimit" type="number" min="0" max="20" />
+            </label>
+            <label class="switch-line">
+              <input id="aiProactiveEnabled" type="checkbox" />
+              <span>允许主动回复</span>
+            </label>
+            <label>
+              <span>沉默后主动秒数</span>
+              <input id="aiProactiveIdle" type="number" min="5" step="1" />
+            </label>
+            <div class="toolbar wrap">
+              <button id="resetAiReplyDefaults" class="button" type="button">恢复默认猫娘设置</button>
+              <button id="clearAiMemory" class="button danger" type="button">清空本地记忆</button>
+              <span id="aiReplyResult" class="result-line"></span>
+            </div>
+          </div>
+        </details>
+
+        <details class="setup-block" id="stopSettingsBlock">
+          <summary>停止词</summary>
+          <div class="setup-body">
+            <p class="hint">命中后立即停止当前梗语音或 TTS。</p>
+            <label class="wide-field">
+              <span>停止词列表</span>
+              <textarea id="stopTriggers" rows="4" spellcheck="false"></textarea>
+            </label>
+            <div class="toolbar wrap">
+              <button id="resetStopDefaults" class="button" type="button">恢复默认停止词</button>
+              <span id="stopResult" class="result-line"></span>
+            </div>
+          </div>
+        </details>
+
+        <details class="setup-block" id="memeSettingsBlock">
+          <summary>梗库</summary>
+          <div class="setup-body">
+            <p id="memeSummary" class="hint"></p>
+            <p id="memeTtsSummary" class="hint"></p>
+            <div class="toolbar wrap">
+              <button id="prebuildMissingMemeTts" class="button" type="button">预制缺失梗语音</button>
+              <button id="prebuildAllMemeTts" class="button" type="button">重新预制全部</button>
+              <button id="clearMemeTtsCache" class="button danger" type="button">清除预制缓存</button>
+              <span id="memeTtsResult" class="result-line"></span>
+            </div>
+            <div class="toolbar wrap">
+              <button id="exportMemePack" class="button" type="button">导出梗库 ZIP</button>
+              <label class="button import-button">
+                导入梗库 ZIP
+                <input id="importMemePack" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden />
+              </label>
+              <button id="restoreDefaultMemes" class="button danger" type="button">恢复默认梗库</button>
+              <span id="memePackResult" class="result-line"></span>
+            </div>
+            <label class="wide-field">
+              <span>选择梗</span>
+              <select id="memeSelect"></select>
+            </label>
+            <label>
+              <span>标题</span>
+              <input id="memeTitle" type="text" autocomplete="off" />
+            </label>
+            <label>
+              <span>音频文件</span>
+              <input id="memeAudioFile" type="file" accept="audio/*" />
+            </label>
+            <label>
+              <span>普通触发词</span>
+              <textarea id="memeTriggers" rows="4" placeholder="一行一个，命中后按当前版本逻辑处理"></textarea>
+            </label>
+            <label>
+              <span>直通触发词</span>
+              <textarea id="memeDirectTriggers" rows="4" placeholder="一行一个，命中后直接播放"></textarea>
+            </label>
+            <label class="wide-field">
+              <span>描述</span>
+              <textarea id="memeDescription" rows="3"></textarea>
+            </label>
+            <label>
+              <span>适合场景</span>
+              <textarea id="memeSituations" rows="4"></textarea>
+            </label>
+            <label>
+              <span>避开语境</span>
+              <textarea id="memeAvoid" rows="4"></textarea>
+            </label>
+            <div class="toolbar wrap">
+              <button id="saveMemeEdit" class="button primary" type="button">保存梗详情</button>
+              <button id="resetMemeEdit" class="button" type="button">重置当前编辑</button>
+              <span id="memeEditResult" class="result-line"></span>
+            </div>
+          </div>
+        </details>
+
+        <section class="setup-block setup-static" id="localConfigBlock">
+          <h3>本机配置</h3>
+          <div class="setup-body">
+            <div class="toolbar wrap">
+              <button id="saveSettings" class="button primary" type="button">保存设置</button>
+              <button id="exportSettings" class="button" type="button">导出</button>
+              <label class="button import-button">
+                导入
+                <input id="importSettings" type="file" accept="application/json" hidden />
+              </label>
+              <button id="clearSettings" class="button danger" type="button">清除本机配置</button>
+            </div>
+            <p class="hint">发布版不会包含你的 key、local 配置、日志和私有音色参考音频。</p>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <script src="./public.js" type="module"></script>
+  </body>
+</html>

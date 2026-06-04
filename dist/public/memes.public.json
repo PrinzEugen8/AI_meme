@@ -1,0 +1,1025 @@
+{
+  "schema": 1,
+  "generated_by": "tools/build_public_web.py",
+  "items": [
+    {
+      "id": "man_what_can_i_say",
+      "title": "牢大声音素材 - 6.what can I say(Av115837834887468,P6)",
+      "audio_url": "./assets/audio/memes/牢大声音素材 - 6.what can I say(Av115837834887468,P6).mp3",
+      "triggers": [
+        "曼",
+        "慢",
+        "蛮",
+        "满"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "man",
+        "曼",
+        "慢",
+        "蛮",
+        "满"
+      ],
+      "description": "科比语音",
+      "situations": [
+        "可以表示无奈",
+        "或者单纯的玩梗",
+        "比如跟牢大或者牢相关",
+        "还有坠机、直升机相关"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "男人，什么罐头我说",
+      "tts_mode": "tts",
+      "priority": 110,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "long_ke_shi",
+      "title": "聋可是",
+      "audio_url": "./assets/audio/memes/聋可是.mp3",
+      "triggers": [
+        "龙"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "龙"
+      ],
+      "description": "新三语音：龙，可是帝王之征啊",
+      "situations": [
+        "扎聋自己的耳朵",
+        "其他跟long这个发音相关的场合"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "龙，可是帝王之征啊",
+      "tts_mode": "tts",
+      "priority": 96,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "guan_yu_this_is_bad",
+      "title": "关羽之歌",
+      "audio_url": "./assets/audio/memes/关羽之歌.mp3",
+      "triggers": [
+        "完了",
+        "坏了"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "完了",
+        "坏了"
+      ],
+      "description": "新三国的BGM",
+      "situations": [
+        "结束",
+        "完结",
+        "失败等结局"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "",
+      "tts_mode": "audio",
+      "priority": 90,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "impossible_absolutely_impossible",
+      "title": "不可能",
+      "audio_url": "./assets/audio/memes/不可能.mp3",
+      "triggers": [
+        "可能"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "可能"
+      ],
+      "description": "新三台词：不可能，绝对不可能",
+      "situations": [
+        "对某种可能性或者可行性表示不可能"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "不可能，绝对不可能",
+      "tts_mode": "tts",
+      "priority": 98,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "ziwen_guitian",
+      "title": "自刎归天",
+      "audio_url": "./assets/audio/memes/自刎归天.mp3",
+      "triggers": [
+        "听令",
+        "最后一刻"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "听令",
+        "最后一刻"
+      ],
+      "description": "新三台词：自刎归天",
+      "situations": [
+        "出现战至最后一刻或者三军听令、听我号令这种类似的场景",
+        "当别人让你想办法",
+        "问你怎么办"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "自刎归天",
+      "tts_mode": "tts",
+      "priority": 94,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "ni_tai_lao_le",
+      "title": "你太老了",
+      "audio_url": "./assets/audio/memes/你太老了.mp3",
+      "triggers": [
+        "回去吧"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "回去吧"
+      ],
+      "description": "新三语音：回去吧，你太老了",
+      "situations": [
+        "用来嘲讽喜欢幼小角色"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "回去吧，你太老了",
+      "tts_mode": "tts",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "wo_wen_ni_zhe_gua_bao_shu_ma",
+      "title": "我问你这瓜保熟吗",
+      "audio_url": "./assets/audio/memes/我问你这瓜保熟吗.mp3",
+      "triggers": [
+        "我问"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "我问"
+      ],
+      "description": "华强买瓜台词：我问你这瓜保熟吗",
+      "situations": [
+        "跟瓜相关"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "我问你这瓜保熟吗",
+      "tts_mode": "tts",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "huan_da_zhan",
+      "title": "换大展",
+      "audio_url": "./assets/audio/memes/换大展.mp3",
+      "triggers": [
+        "客气"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "客气"
+      ],
+      "description": "新三台词：换大盏",
+      "situations": [
+        "表示自己不客气"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "换大盏",
+      "tts_mode": "tts",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "shi_zhe_ge_luan_shi_hai_le_ni_a",
+      "title": "是这个乱世害了你啊",
+      "audio_url": "./assets/audio/memes/是这个乱世害了你啊.mp3",
+      "triggers": [
+        "害了你"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "害了你"
+      ],
+      "description": "新三台词：不是我害了你，是这个乱世害了你啊",
+      "situations": [
+        "坑了别人还推脱责任"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "不是我害了你，是这个乱世害了你啊",
+      "tts_mode": "tts",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "man_ba_o_u_t",
+      "title": "曼巴out",
+      "audio_url": "./assets/audio/memes/曼巴out.mp3",
+      "triggers": [
+        "曼",
+        "慢",
+        "蛮",
+        "满"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "曼",
+        "慢",
+        "蛮",
+        "满"
+      ],
+      "description": "牢大语音",
+      "situations": [
+        "只要是跟man或者曼相关的都可以出现"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "曼巴出去",
+      "tts_mode": "auto",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "jing_ran_bu_xu",
+      "title": "竟然不许",
+      "audio_url": "./assets/audio/memes/竟然不许.mp3",
+      "triggers": [
+        "回消息"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "回消息"
+      ],
+      "description": "新三台词：竟然不许",
+      "situations": [
+        "出现不允许或者不行的情况"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "竟然不许",
+      "tts_mode": "tts",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "man_bo",
+      "title": "曼波",
+      "audio_url": "./assets/audio/memes/曼波.mp3",
+      "triggers": [
+        "哈基米",
+        "基米",
+        "吉米"
+      ],
+      "direct_triggers": [
+        "基米"
+      ],
+      "examples": [
+        "哈基米",
+        "基米",
+        "吉米"
+      ],
+      "description": "哈基米语音",
+      "situations": [
+        "出现哈基米或者基米以及类似的读音的时候可以出现"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "曼波",
+      "tts_mode": "tts",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "ting_che",
+      "title": "停车",
+      "audio_url": "./assets/audio/memes/停车.mp3",
+      "triggers": [
+        "停车",
+        "泊车"
+      ],
+      "direct_triggers": [
+        "开始停车",
+        "我要停车",
+        "准备停车",
+        "开始泊车",
+        "我要泊车"
+      ],
+      "examples": [
+        "停车",
+        "泊车"
+      ],
+      "description": "停车的小曲",
+      "situations": [
+        "停车的时候"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "",
+      "tts_mode": "audio",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "tai_yang",
+      "title": "太阳",
+      "audio_url": "./assets/audio/memes/太阳.mp3",
+      "triggers": [
+        "恩情"
+      ],
+      "direct_triggers": [
+        "恩情"
+      ],
+      "examples": [
+        "恩情"
+      ],
+      "description": "恩情的BGM",
+      "situations": [
+        "表示感恩或者恩情",
+        "或者跟将军有关",
+        "表示感动或者流泪的场景"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "",
+      "tts_mode": "audio",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_不可能绝对不可能",
+      "title": "不可能，绝对不可能",
+      "audio_url": "./assets/audio/memes/新三国语音包/不可能，绝对不可能.mp3",
+      "triggers": [
+        "不可能"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "不可能"
+      ],
+      "description": "新三台词：不可能，绝对不可能",
+      "situations": [
+        "表示不可能",
+        "对于用户表示可以做某事事进行无条件反驳"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "不可能，绝对不可能",
+      "tts_mode": "auto",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_不要愤怒愤怒会降低你的智慧",
+      "title": "不要愤怒，愤怒会降低你的智慧",
+      "audio_url": "./assets/audio/memes/新三国语音包/不要愤怒，愤怒会降低你的智慧.mp3",
+      "triggers": [
+        "愤怒",
+        "生气"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "愤怒",
+        "生气"
+      ],
+      "description": "新三台词：不要愤怒，愤怒会降低你的智慧",
+      "situations": [
+        "愤怒或者生气的场景"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "不要愤怒，愤怒会降低你的智慧",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_吃什么是啊",
+      "title": "吃什么是啊",
+      "audio_url": "./assets/audio/memes/新三国语音包/吃什么是啊.mp3",
+      "triggers": [
+        "吃什么"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "吃什么"
+      ],
+      "description": "新三台词：是啊，吃什么",
+      "situations": [
+        "对吃什么的疑惑",
+        "不知道要吃什么"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "是啊，吃什么",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_当浮一大白",
+      "title": "当浮一大白",
+      "audio_url": "./assets/audio/memes/新三国语音包/当浮一大白.mp3",
+      "triggers": [
+        "好"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "好"
+      ],
+      "description": "新三台词：当浮一大白",
+      "situations": [
+        "对某人表示肯定或者赞赏"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "当浮一大白",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_第一雄关徐州城",
+      "title": "第一雄关徐州城",
+      "audio_url": "./assets/audio/memes/新三国语音包/第一雄关徐州城.mp3",
+      "triggers": [
+        "徐州"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "徐州"
+      ],
+      "description": "徐州城既不在中原也不是雄关",
+      "situations": [
+        "跟徐州相关"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "徐州城，不愧为中原第一雄关",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_都有伯牙舒淇之才",
+      "title": "都有伯牙舒淇之才",
+      "audio_url": "./assets/audio/memes/新三国语音包/都有伯牙舒淇之才.mp3",
+      "triggers": [
+        "有才",
+        "伯牙",
+        "舒淇"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "有才",
+        "伯牙",
+        "舒淇"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "都有伯牙舒淇之才",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_风从虎云从龙龙虎英雄傲苍穹",
+      "title": "风从虎云从龙龙虎英雄傲苍穹",
+      "audio_url": "./assets/audio/memes/新三国语音包/风从虎云从龙龙虎英雄傲苍穹.mp3",
+      "triggers": [
+        "风"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "风"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "风从虎云从龙龙虎英雄傲苍穹",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_个个有情有义",
+      "title": "个个有情有义",
+      "audio_url": "./assets/audio/memes/新三国语音包/个个有情有义.mp3",
+      "triggers": [
+        "个个",
+        "有情有义"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "个个",
+        "有情有义"
+      ],
+      "description": "嘲讽别人忘恩负义",
+      "situations": [
+        "跟情义相关",
+        "跟蛐蛐相关",
+        "嘲讽别人忘恩负义"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "我的那些个蛐蛐，他们个个有情有义",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_恭喜爹可以称帝了",
+      "title": "恭喜爹可以称帝了",
+      "audio_url": "./assets/audio/memes/新三国语音包/恭喜爹可以称帝了.mp3",
+      "triggers": [
+        "恭喜",
+        "撑地",
+        "称帝",
+        "牛逼"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "恭喜",
+        "撑地",
+        "称帝",
+        "牛逼"
+      ],
+      "description": "新三语音：恭喜爹可以称帝了",
+      "situations": [
+        "赞赏",
+        "十分钦佩",
+        "肯定"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "恭喜爹可以称帝了",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_换大盏",
+      "title": "换大盏",
+      "audio_url": "./assets/audio/memes/新三国语音包/换大盏.mp3",
+      "triggers": [
+        "大盏"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "大盏"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "换大盏",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_竟然不许",
+      "title": "竟然不许",
+      "audio_url": "./assets/audio/memes/新三国语音包/竟然不许.mp3",
+      "triggers": [
+        "竟然",
+        "不许",
+        "不可以",
+        "不行"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "竟然",
+        "不许",
+        "不可以",
+        "不行"
+      ],
+      "description": "新三语音：竟然不许",
+      "situations": [
+        "出现不允许或者不行的情况"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "竟然不许",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_列位诸公",
+      "title": "列位诸公",
+      "audio_url": "./assets/audio/memes/新三国语音包/列位诸公.mp3",
+      "triggers": [
+        "列位",
+        "诸公",
+        "各位"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "列位",
+        "诸公",
+        "各位"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "列位诸公",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_生死不明那就是死了",
+      "title": "生死不明那就是死了",
+      "audio_url": "./assets/audio/memes/新三国语音包/生死不明那就是死了.mp3",
+      "triggers": [
+        "生死不明"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "生死不明"
+      ],
+      "description": "生死不明那就是死了",
+      "situations": [
+        "跟生死不明有关",
+        "询问别人死了没"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "生死不明那就是死了",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_是我的韩信白起周亚夫",
+      "title": "是我的韩信白起周亚夫",
+      "audio_url": "./assets/audio/memes/新三国语音包/是我的韩信白起周亚夫.mp3",
+      "triggers": [
+        "你是我的"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "你是我的"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "你是我的韩信白起周亚夫",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_死是凉爽的夏夜",
+      "title": "死是凉爽的夏夜",
+      "audio_url": "./assets/audio/memes/新三国语音包/死是凉爽的夏夜.mp3",
+      "triggers": [
+        "死"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "死"
+      ],
+      "description": "新三语音：死是凉爽的夏夜，可供人无忧的安眠",
+      "situations": [
+        "跟死有关"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "死，是凉爽的夏夜，可供人无忧的安眠",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_他过江我也过江",
+      "title": "他过江我也过江",
+      "audio_url": "./assets/audio/memes/新三国语音包/他过江我也过江.mp3",
+      "triggers": [
+        "我也"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "我也"
+      ],
+      "description": "那好啊，他过江我也过江",
+      "situations": [
+        "换家的场景"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "那好啊，他过江我也过江",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_我的大斧早就饥渴难耐了",
+      "title": "我的大斧早就饥渴难耐了",
+      "audio_url": "./assets/audio/memes/新三国语音包/我的大斧早就饥渴难耐了.mp3",
+      "triggers": [
+        "大刀",
+        "饥渴"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "大刀",
+        "饥渴"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "我的大斧早就饥渴难耐了",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_我二弟天下无敌",
+      "title": "我二弟天下无敌",
+      "audio_url": "./assets/audio/memes/新三国语音包/我二弟天下无敌.mp3",
+      "triggers": [
+        "天下无敌"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "天下无敌"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "我二弟天下无敌",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_一把仁之剑一把义之剑",
+      "title": "一把仁之剑一把义之剑",
+      "audio_url": "./assets/audio/memes/新三国语音包/一把仁之剑一把义之剑.mp3",
+      "triggers": [
+        "一把"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "一把"
+      ],
+      "description": "",
+      "situations": [
+        "出现一把"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "一把仁之剑，一把义之剑",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_一对笑面虎两头乌角鲨",
+      "title": "一对笑面虎两头乌角鲨",
+      "audio_url": "./assets/audio/memes/新三国语音包/一对笑面虎两头乌角鲨.mp3",
+      "triggers": [
+        "一对"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "一对"
+      ],
+      "description": "",
+      "situations": [
+        "谈及到一对或者一双的场景"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "一对笑面虎，两头乌角鲨",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_已成骄兵而骄兵必败",
+      "title": "已成骄兵而骄兵必败",
+      "audio_url": "./assets/audio/memes/新三国语音包/已成骄兵而骄兵必败.mp3",
+      "triggers": [
+        "骄兵"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "骄兵"
+      ],
+      "description": "分析局势",
+      "situations": [
+        "分析局势",
+        "分析胜算",
+        "别的队伍更占优势",
+        "别人更强"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "已成骄兵，而骄兵必败",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_这就不奇怪了",
+      "title": "这就不奇怪了",
+      "audio_url": "./assets/audio/memes/新三国语音包/这就不奇怪了.mp3",
+      "triggers": [
+        "奇怪"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "奇怪"
+      ],
+      "description": "新三语音：这就不奇怪了",
+      "situations": [
+        "表示对某件事理解了",
+        "表示不奇怪了"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "这就不奇怪了",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_这是谁的部将",
+      "title": "这是谁的部将",
+      "audio_url": "./assets/audio/memes/新三国语音包/这是谁的部将.mp3",
+      "triggers": [
+        "部将"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "部将"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "这是谁的部将",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "xsg_自刎归天",
+      "title": "自刎归天",
+      "audio_url": "./assets/audio/memes/新三国语音包/自刎归天.mp3",
+      "triggers": [
+        "号令",
+        "最后一刻",
+        "听令"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "号令",
+        "最后一刻",
+        "听令"
+      ],
+      "description": "",
+      "situations": [],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "自刎归天",
+      "tts_mode": "tts",
+      "priority": 82,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "ni_shi_nan_de_nv_de",
+      "title": "你是男的女的",
+      "audio_url": "./assets/audio/memes/你是男的女的.mp3",
+      "triggers": [
+        "那我问你"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "你是男的女的"
+      ],
+      "description": "当你问一个人的时候",
+      "situations": [
+        "强关联那我问你"
+      ],
+      "tags": [],
+      "avoid": [
+        "单独我问"
+      ],
+      "voice_text": "你是男的女的",
+      "tts_mode": "tts",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "guan_zhu_ta_fei_miao_guan_zhu_ta_fei_xie_xie_miao",
+      "title": "关注塔菲喵，关注塔菲谢谢喵",
+      "audio_url": "./assets/audio/memes/关注塔菲喵，关注塔菲谢谢喵.mp3",
+      "triggers": [
+        "永雏塔菲",
+        "塔菲",
+        "关注"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "关注塔菲喵",
+        "关注塔菲谢谢喵"
+      ],
+      "description": "一个很唐的二次元虚拟主播",
+      "situations": [
+        "跟唐氏相关的",
+        "跟永雏塔菲相关"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "关注塔菲喵，关注塔菲谢谢喵",
+      "tts_mode": "auto",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    },
+    {
+      "id": "jin_bu_de_xiao_qu",
+      "title": "进步的小曲",
+      "audio_url": "./assets/audio/memes/进步的小曲.mp3",
+      "triggers": [
+        "进步的小曲"
+      ],
+      "direct_triggers": [],
+      "examples": [
+        "进步的小曲"
+      ],
+      "description": "考公、进步的小曲",
+      "situations": [
+        "跟进步相关",
+        "跟考公相关",
+        "跟上岸相关"
+      ],
+      "tags": [],
+      "avoid": [],
+      "voice_text": "",
+      "tts_mode": "audio",
+      "priority": 80,
+      "cooldown_ms": 1200,
+      "min_confidence": 0.95
+    }
+  ],
+  "audio_copied": 41,
+  "missing_audio": []
+}
