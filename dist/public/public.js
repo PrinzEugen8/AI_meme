@@ -102,19 +102,12 @@ const LLM_MEME_SYSTEM_PROMPT = (
   "Fast meme-only Timing Gate judge. Actions: play_meme or no_reply only. Never output reply text. "
   + "Judge trigger_transcript; recent_dialogue is context. local_rule_matches are hints only. "
   + "Pick play_meme only when one candidate_meme naturally lands now with confidence >= 0.75; otherwise no_reply. "
-  + "Runtime will reject low confidence, unknown meme_id, or meme_id outside candidate_memes. "
   + "meme_id must be from candidate_memes or null. Output compact JSON: action, meme_id, confidence, reason, timing."
   + "只输出 JSON，例如：{\"action\":\"no_reply\",\"meme_id\":null,\"confidence\":0.92,"
   + "\"reason\":\"不适合接梗\",\"timing\":\"等待\"}"
 );
 
 const NEKO_REPLY_COOLDOWN_MS = 4500;
-const NEKO_MEME_MIN_CONFIDENCE = 0.6;
-const NEKO_POST_MEME_REPLY_SILENCE_MS = 3000;
-const NEKO_SHORT_UTTERANCE_MAX_CHARS = 2;
-const NEKO_LONG_UTTERANCE_MIN_CHARS = 5;
-const NEKO_SHORT_COALESCE_MS = 8000;
-const NEKO_LONG_COALESCE_MS = 1000;
 const TRIGGER_RANDOM_SCORE_WINDOW = 0.14;
 const ASR_FALLBACK_FINAL_SILENCE_MS = 950;
 const ASR_SILENCE_RMS = 0.012;
@@ -131,12 +124,11 @@ const ASR_VAD_FINAL_CLOSE_MS = 900;
 const ASR_VAD_PENDING_MAX_MS = 10000;
 const ASR_RECOVERY_BUFFER_MS = 10000;
 const ASR_CONTINUOUS_STREAMING = true;
-const ASR_PACKET_TARGET_MS = 180;
 const ASR_VAD_OPEN_RMS_FLOOR = 0.012;
 const ASR_VAD_CLOSE_RMS_FLOOR = 0.008;
 const ASR_VAD_OPEN_PEAK_FLOOR = 0.045;
-const ASR_TURN_COALESCE_MS = 500;
-const ASR_TURN_MAX_WAIT_MS = 1200;
+const ASR_TURN_COALESCE_MS = 1000;
+const ASR_TURN_MAX_WAIT_MS = 2500;
 const ASR_TURN_MAX_ITEMS = 2;
 const ASR_SHORT_TAIL_RE = /^[吗呢吧啊呀么嘛呗噢哦喔哇嗯唔诶欸？！?！,.，。]{1,2}$/;
 const ASR_RECOVERABLE_ERROR_NOTICE_EVERY = 3;
@@ -144,8 +136,6 @@ const SPEECH_NETWORK_MAX_RETRIES = 3;
 const SPEECH_NETWORK_RETRY_MS = 1800;
 const SPEECH_MOBILE_RESTART_MS = 1800;
 const SPEECH_DESKTOP_RESTART_MS = 1200;
-const DEFAULT_AUDIO_CACHE_PREFIX = "ai-meme-neko-default-audio-";
-const DEFAULT_AUDIO_CACHE_CONCURRENCY = 2;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let settings = loadSettings();
@@ -160,9 +150,7 @@ let audioContext = null;
 let partialLine = null;
 let lastPlayedAt = new Map();
 let lastNekoReplyAt = 0;
-let lastMemePlayedAt = 0;
 let nekoReplyTimestamps = [];
-let nekoTurnSerial = 0;
 let relayBackendOk = null;
 let recognitionBlocked = false;
 let selectedMemeId = "";
@@ -181,8 +169,6 @@ let asrPrerollFrames = [];
 let asrPrerollMs = 0;
 let asrPendingFrames = [];
 let asrPendingMs = 0;
-let asrPacketFrames = [];
-let asrPacketMs = 0;
 let asrRecoveryFrames = [];
 let asrRecoveryMs = 0;
 let asrTailTimer = null;
@@ -226,8 +212,6 @@ let asrTurnBuffer = [];
 let asrTurnFlushTimer = null;
 let asrTurnStartedAt = 0;
 let confirmedDialogue = [];
-let defaultAudioCacheStarted = false;
-let defaultAudioCacheRunning = false;
 
 const el = (id) => document.getElementById(id);
 
@@ -250,7 +234,6 @@ async function init() {
   renderMode();
   renderMemePanel();
   renderSupportNotice();
-  startDefaultAudioPrecache().catch((error) => console.debug("default audio precache failed", error));
   await checkRelayHealth();
   if (location.hash === "#settings") openSettings();
 }
@@ -332,8 +315,6 @@ function bindUi() {
   el("prebuildMissingMemeTts").addEventListener("click", () => prebuildMemeTts({ force: false }));
   el("prebuildAllMemeTts").addEventListener("click", () => prebuildMemeTts({ force: true }));
   el("clearMemeTtsCache").addEventListener("click", clearMemeTtsCache);
-  const clearDefaultAudio = el("clearDefaultAudioCache");
-  if (clearDefaultAudio) clearDefaultAudio.addEventListener("click", clearDefaultAudioCache);
 }
 
 function openSettings() {
@@ -637,7 +618,6 @@ function nekoControllerSystemPrompt() {
     + "只能输出 JSON，action 只能是 play_meme、reply_tts、wait、no_reply。"
     + "先判断用户是否说完、现在该不该插话；用户还在铺垫就 wait，不适合插话就 no_reply。"
     + "如果该说话，先看 candidate_memes 里有没有贴合当前语境、不会硬接的梗；有就 play_meme，meme_id 必须来自候选。"
-    + "play_meme 必须自然贴合、confidence 不低于 min_confidence；低置信度或候选外 meme_id 会被丢弃。"
     + "没有自然合适的梗时，才 reply_tts，reply_text 是一句适合直接念出来的短句。"
     + "不要每句话都回，不要为了用梗而用梗，不要暴露候选列表或内部判断。"
     + "relevant_memories 只作为用户偏好和上下文参考，使用时要自然，不要复读记忆。"
@@ -671,57 +651,6 @@ function tryLocalStopAudio(text, { announce = false } = {}) {
   if (!phrase) return false;
   stopAudio();
   if (announce) appendLine("system", `已停止播放：${phrase}`);
-  return true;
-}
-
-function utteranceCharWeight(text) {
-  let weight = 0;
-  for (const char of String(text || "").trim()) {
-    if (/[\p{L}\p{N}]/u.test(char)) weight += 1;
-  }
-  return weight;
-}
-
-function isSingleCjkTriggerInsideLongText(phrase, text) {
-  const trigger = normalizeText(phrase).replace(/\s+/g, "");
-  const transcript = normalizeText(text).replace(/\s+/g, "");
-  return trigger.length === 1 && /[\u4e00-\u9fff]/.test(trigger) && transcript.length > 2;
-}
-
-function evaluateContextGate(text) {
-  const clean = String(text || "").trim();
-  const norm = normalizeText(clean);
-  const weight = utteranceCharWeight(clean);
-  if (!norm) return { allowed: false, confidence: 0, reason: "empty transcript" };
-  if (/^[\W_]+$/u.test(clean)) return { allowed: false, confidence: 0.05, reason: "non speech transcript" };
-  if (isShortAsrTail(clean) || isWeakNoise(clean)) return { allowed: false, confidence: 0.18, reason: "weak ASR fragment" };
-
-  const strongPhrases = [
-    "man", "曼波", "聋可是", "龙可是", "牢大", "关注塔菲", "不可能", "绝对不可能",
-    "自刎归天", "自刎", "归天", "坏了", "这下完了", "终于下班", "有恩情", "进步很大",
-  ];
-  if (strongPhrases.some((phrase) => containsPhrase(clean, phrase))) {
-    return { allowed: true, confidence: 0.92, reason: "strong trigger" };
-  }
-
-  if (weight <= 1) return { allowed: false, confidence: 0.1, reason: "too short" };
-
-  const workPhrases = [
-    "接口", "初始化", "函数", "变量", "模块", "依赖", "编译", "部署", "调试",
-    "这个参数", "这个文件", "这个类", "报错", "日志", "仓库", "分支", "提交",
-  ];
-  if (workPhrases.some((phrase) => containsPhrase(clean, phrase))) {
-    return { allowed: false, confidence: 0.32, reason: "normal work context" };
-  }
-
-  if (weight <= 8) return { allowed: true, confidence: 0.64, reason: "short expressive phrase" };
-  return { allowed: true, confidence: 0.56, reason: "general speech allowed" };
-}
-
-function shouldDelayShortAsrTurn(text) {
-  if (isShortAsrTail(text) || isWeakNoise(text)) return true;
-  if (utteranceCharWeight(text) > NEKO_SHORT_UTTERANCE_MAX_CHARS) return false;
-  if (bestLocalMatch(text)) return false;
   return true;
 }
 
@@ -941,8 +870,6 @@ function openAsrRelaySocket({ reason = "speech" } = {}) {
         endpoint: settings.asrEndpoint || DEFAULT_ASR_ENDPOINT,
         sample_rate: 16000,
         end_window_size: 1200,
-        continuous_streaming: ASR_CONTINUOUS_STREAMING,
-        packet_target_ms: ASR_PACKET_TARGET_MS,
       }));
     };
     socket.onerror = () => {
@@ -1216,37 +1143,6 @@ function queueAsrFrames(frames) {
   for (const frame of frames) queueAsrFrame(frame.pcm, frame.durationMs);
 }
 
-function pushAsrPendingFrame(pcm, durationMs = 0) {
-  asrPendingFrames.push({ pcm, durationMs });
-  asrPendingMs += durationMs;
-  trimAsrPendingFrames();
-  ensureAsrRelaySocket({ reason: "speech" }).then(flushAsrPendingFrames).catch(handleAsrOpenError);
-}
-
-function queueAsrPacketFrame(pcm, durationMs = 0) {
-  asrPacketFrames.push({ pcm, durationMs });
-  asrPacketMs += durationMs || 0;
-  if (asrPacketMs >= ASR_PACKET_TARGET_MS) flushAsrPacketBuffer();
-}
-
-function flushAsrPacketBuffer() {
-  if (!asrPacketFrames.length) return;
-  const frames = asrPacketFrames;
-  const durationMs = asrPacketMs;
-  asrPacketFrames = [];
-  asrPacketMs = 0;
-  const byteLength = frames.reduce((total, frame) => total + (frame.pcm?.byteLength || 0), 0);
-  if (!byteLength) return;
-  const combined = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const frame of frames) {
-    const bytes = new Uint8Array(frame.pcm || new ArrayBuffer(0));
-    combined.set(bytes, offset);
-    offset += bytes.byteLength;
-  }
-  pushAsrPendingFrame(combined.buffer, durationMs);
-}
-
 function trimAsrPendingFrames() {
   while (asrPendingFrames.length && asrPendingMs > ASR_VAD_PENDING_MAX_MS) {
     const frame = asrPendingFrames.shift();
@@ -1282,11 +1178,10 @@ function clearAsrRecoveryBuffer() {
 
 function queueAsrFrame(pcm, durationMs = 0) {
   if (!pcm?.byteLength || recognitionBlocked || !isNekoCallActive()) return;
-  if (ASR_CONTINUOUS_STREAMING) {
-    queueAsrPacketFrame(pcm, durationMs);
-    return;
-  }
-  pushAsrPendingFrame(pcm, durationMs);
+  asrPendingFrames.push({ pcm, durationMs });
+  asrPendingMs += durationMs;
+  trimAsrPendingFrames();
+  ensureAsrRelaySocket({ reason: "speech" }).then(flushAsrPendingFrames).catch(handleAsrOpenError);
 }
 
 function flushAsrPendingFrames() {
@@ -1463,8 +1358,6 @@ function closeAsrRelaySocket({ sendStop = true, reason = "client_stop", dropPend
     : String(reason || "").includes("reconnect") ? "recovering" : "closed";
   asrReadyAt = 0;
   if (dropPending) {
-    asrPacketFrames = [];
-    asrPacketMs = 0;
     asrPendingFrames = [];
     asrPendingMs = 0;
     clearAsrRecoveryBuffer();
@@ -1531,8 +1424,6 @@ function resetAsrVadState({ dropPending = true } = {}) {
   asrPrerollFrames = [];
   asrPrerollMs = 0;
   if (dropPending) {
-    asrPacketFrames = [];
-    asrPacketMs = 0;
     asrPendingFrames = [];
     asrPendingMs = 0;
     clearAsrRecoveryBuffer();
@@ -1695,7 +1586,7 @@ function enqueueAsrTurn(text, meta = {}) {
     scheduleAsrTurnFlush(0);
     return;
   }
-  scheduleAsrTurnFlush(shouldDelayShortAsrTurn(clean) ? NEKO_SHORT_COALESCE_MS : ASR_TURN_COALESCE_MS);
+  scheduleAsrTurnFlush(ASR_TURN_COALESCE_MS);
 }
 
 function scheduleAsrTurnFlush(delayMs = ASR_TURN_COALESCE_MS) {
@@ -2129,37 +2020,9 @@ function speechErrorMessage(error) {
   return messages[error] || `语音识别异常：${error || "unknown"}`;
 }
 
-function nextTranscriptTurn() {
-  nekoTurnSerial += 1;
-  return nekoTurnSerial;
-}
-
-function isTranscriptTurnCurrent(turnSerial) {
-  return callActive && turnSerial === nekoTurnSerial;
-}
-
-function decisionConfidence(decision) {
-  const value = Number(decision?.confidence);
-  return Number.isFinite(value) ? value : 0;
-}
-
-function decisionMemeAllowed(decision, candidateMemes) {
-  if (decision?.action !== "play_meme") return false;
-  const memeId = String(decision.meme_id || "");
-  if (!memeId || !validMemeId(memeId)) return false;
-  if (decisionConfidence(decision) < NEKO_MEME_MIN_CONFIDENCE) return false;
-  const candidateIds = new Set(candidateMemes.map((meme) => meme.id));
-  return candidateIds.has(memeId);
-}
-
-function memeById(id) {
-  return memes.find((item) => item.id === id) || null;
-}
-
 async function handleTranscript(text) {
   if (tryLocalStopAudio(text, { announce: true })) return;
   const mode = activeCallMode || settings.mode || "keyword";
-  const turnSerial = nextTranscriptTurn();
 
   if (mode === "keyword") {
     const chosen = chooseLocalMeme(text);
@@ -2168,15 +2031,9 @@ async function handleTranscript(text) {
   }
 
   if (mode === "semantic") {
-    const localMatches = listLocalMatches(text);
-    const directLocal = localMatches.find((item) => hasDirectMatch(text, item));
-    if (directLocal) {
-      await playMeme(directLocal, "直通触发");
-      return;
-    }
-    const gate = evaluateContextGate(text);
-    if (!gate.allowed) {
-      console.debug("semantic context gate blocked", { text, gate });
+    const local = chooseLocalMeme(text);
+    if (local) {
+      await playMeme(local, "关键词命中");
       return;
     }
     if (!hasLlm()) {
@@ -2188,19 +2045,14 @@ async function handleTranscript(text) {
       return;
     }
     let decision;
-    const candidateMemes = selectMemeCandidates(text, 16, { localMatches });
     try {
-      decision = await decideMeme(text, { gate, localMatches, candidateMemes });
+      decision = await decideMeme(text);
     } catch (error) {
       appendLine("system", error.message || String(error));
       return;
     }
-    if (!isTranscriptTurnCurrent(turnSerial)) {
-      console.debug("semantic stale decision dropped", { decision });
-      return;
-    }
-    if (decisionMemeAllowed(decision, candidateMemes)) {
-      const meme = memeById(decision.meme_id);
+    if (decision.action === "play_meme" && validMemeId(decision.meme_id)) {
+      const meme = memes.find((item) => item.id === decision.meme_id);
       await playMeme(meme, decision.reason || "LLM 接梗");
       return;
     }
@@ -2208,16 +2060,9 @@ async function handleTranscript(text) {
     return;
   }
 
-  const localMatches = listLocalMatches(text);
-  const local = localMatches[0] || null;
-  const directLocal = localMatches.find((item) => hasDirectMatch(text, item));
-  if (directLocal) {
-    await playMeme(directLocal, "直通触发");
-    return;
-  }
-  const gate = evaluateContextGate(text);
-  if (!gate.allowed) {
-    console.debug("neko context gate blocked", { text, gate });
+  const local = bestLocalMatch(text);
+  if (local && hasDirectMatch(text, local)) {
+    await playMeme(local, "直通触发");
     return;
   }
   if (!hasLlm()) {
@@ -2229,20 +2074,14 @@ async function handleTranscript(text) {
     return;
   }
   let decision;
-  const candidateLimit = Math.round(clampNumber(settings.aiMemeCandidateLimit, 0, 512, 50));
-  const candidateMemes = selectMemeCandidates(text, candidateLimit, { localMatches });
   try {
-    decision = await decideController(text, { local, localMatches, candidateMemes, gate });
+    decision = await decideController(text, local);
   } catch (error) {
     appendLine("system", error.message || String(error));
     return;
   }
-  if (!isTranscriptTurnCurrent(turnSerial)) {
-    console.debug("neko stale decision dropped", { decision });
-    return;
-  }
-  if (decisionMemeAllowed(decision, candidateMemes)) {
-    const meme = memeById(decision.meme_id);
+  if (decision.action === "play_meme" && validMemeId(decision.meme_id)) {
+    const meme = memes.find((item) => item.id === decision.meme_id);
     await playMeme(meme, decision.reason || "LLM 接梗");
     return;
   }
@@ -2276,7 +2115,6 @@ function matchScore(text, meme) {
   ];
   for (const [kind, phrases, score] of groups) {
     for (const phrase of phrases) {
-      if (isSingleCjkTriggerInsideLongText(phrase, text)) continue;
       if (containsPhrase(text, phrase)) return { kind, phrase, score: score + Math.min(0.5, String(phrase).length * 0.02) };
     }
   }
@@ -2303,54 +2141,27 @@ function clampReplyText(text) {
   return clean.length > limit ? clean.slice(0, limit) : clean;
 }
 
-function semanticCandidates(text, limit = 50, options = {}) {
-  return selectMemeCandidates(text, limit, options).map(compactMeme);
-}
-
-function selectMemeCandidates(text, limit = 50, { localMatches = [] } = {}) {
-  const candidateLimit = Math.max(0, localMatches.length ? Math.min(limit, 8) : limit);
-  if (candidateLimit <= 0) return [];
-  const seen = new Set();
-  const shortlist = [];
-  for (const meme of localMatches) {
-    if (!meme?.id || seen.has(meme.id)) continue;
-    shortlist.push(meme);
-    seen.add(meme.id);
-    if (shortlist.length >= candidateLimit) return shortlist;
-  }
-  const scored = memes
-    .filter((meme) => !seen.has(meme.id))
-    .map((meme) => ({ meme, score: candidateScore(text, meme) }))
-    .filter((item) => item.score > 0 || !localMatches.length);
+function semanticCandidates(text, limit = 50) {
+  const query = new Set([...normalizeText(text)].filter((char) => /[\p{L}\p{N}]/u.test(char)));
+  const scored = memes.map((meme) => {
+    const local = matchScore(text, meme).score;
+    const blob = normalizeText([
+      meme.id,
+      meme.title,
+      meme.description,
+      meme.voice_text,
+      ...(meme.triggers || []),
+      ...(meme.direct_triggers || []),
+      ...(meme.examples || []),
+      ...(meme.situations || []),
+      ...(meme.tags || []),
+    ].join(" "));
+    let overlap = 0;
+    query.forEach((char) => { if (blob.includes(char)) overlap += 1; });
+    return { meme, score: local * 10 + overlap + (meme.priority || 0) / 1000 };
+  });
   scored.sort((a, b) => b.score - a.score);
-  for (const { meme } of scored) {
-    if (shortlist.length >= candidateLimit) break;
-    shortlist.push(meme);
-  }
-  return shortlist;
-}
-
-function candidateScore(text, meme) {
-  const local = matchScore(text, meme).score;
-  const query = normalizeText(text);
-  const blob = normalizeText([
-    meme.id,
-    meme.title,
-    meme.description,
-    meme.voice_text,
-    ...(meme.triggers || []),
-    ...(meme.direct_triggers || []),
-    ...(meme.examples || []),
-    ...(meme.situations || []),
-    ...(meme.tags || []),
-  ].join(" "));
-  const queryChars = new Set([...query].filter((char) => /[\p{L}\p{N}]/u.test(char)));
-  const blobChars = new Set([...blob].filter((char) => /[\p{L}\p{N}]/u.test(char)));
-  let overlap = 0;
-  queryChars.forEach((char) => { if (blobChars.has(char)) overlap += 1; });
-  const overlapScore = queryChars.size ? overlap / queryChars.size : 0;
-  const directContain = blob && query && (blob.includes(query) || query.includes(blob)) ? 1.2 : 0;
-  return local * 10 + overlapScore * 3 + directContain + Math.min(0.15, Math.max(0, Number(meme.priority || 0)) / 1000);
+  return scored.slice(0, limit).map(({ meme }) => compactMeme(meme));
 }
 
 function compactMeme(meme) {
@@ -2364,23 +2175,14 @@ function compactMeme(meme) {
     examples: (meme.examples || []).slice(0, 3),
     situations: (meme.situations || []).slice(0, 3),
     avoid: (meme.avoid || []).slice(0, 3),
-    priority: meme.priority || 0,
   };
 }
 
-async function decideMeme(text, { gate, localMatches = [], candidateMemes = [] } = {}) {
+async function decideMeme(text) {
   const payload = {
     trigger_transcript: text,
     recent_dialogue: recentDialogue(8),
-    context_gate: gate || evaluateContextGate(text),
-    local_rule_matches: localMatches.slice(0, 8).map((meme) => ({
-      id: meme.id,
-      kind: meme._kind || "",
-      score: meme._score || 0,
-      trigger_phrase: meme._phrase || "",
-    })),
-    candidate_memes: candidateMemes.map(compactMeme),
-    min_confidence: NEKO_MEME_MIN_CONFIDENCE,
+    candidate_memes: semanticCandidates(text, 16),
   };
   return requestJsonDecision([
     { role: "system", content: LLM_MEME_SYSTEM_PROMPT },
@@ -2388,24 +2190,17 @@ async function decideMeme(text, { gate, localMatches = [], candidateMemes = [] }
   ], 0, 160);
 }
 
-async function decideController(text, { local = null, localMatches = [], candidateMemes = [], gate = null } = {}) {
+async function decideController(text, local) {
   const replyBudget = nekoReplyBudgetStatus();
   const contextLimit = Math.round(clampNumber(settings.aiContextMessages, 1, 24, 8));
+  const candidateLimit = Math.round(clampNumber(settings.aiMemeCandidateLimit, 0, 512, 50));
   const memoryLimit = Math.round(clampNumber(settings.aiMemoryLimit, 0, 20, 3));
   const payload = {
     transcript: text,
-    context_gate: gate || evaluateContextGate(text),
     recent_dialogue: recentDialogue(contextLimit),
     relevant_memories: relevantMemories(text, memoryLimit),
     local_match: local ? compactMeme(local) : null,
-    local_rule_matches: localMatches.slice(0, 8).map((meme) => ({
-      id: meme.id,
-      kind: meme._kind || "",
-      score: meme._score || 0,
-      trigger_phrase: meme._phrase || "",
-    })),
-    candidate_memes: candidateMemes.map(compactMeme),
-    min_confidence: NEKO_MEME_MIN_CONFIDENCE,
+    candidate_memes: semanticCandidates(text, candidateLimit),
     reply_budget: {
       allowed: settings.aiReplyEnabled && replyBudget.allowed,
       cooldown_seconds: replyBudget.cooldown_seconds,
@@ -2464,10 +2259,6 @@ function canStartOrdinaryNekoReply() {
   const budget = nekoReplyBudgetStatus();
   if (!budget.allowed) {
     console.debug("neko reply blocked", budget);
-    return false;
-  }
-  if (Date.now() - lastMemePlayedAt < NEKO_POST_MEME_REPLY_SILENCE_MS) {
-    console.debug("neko reply blocked", { blocked_reason: "post_meme_silence" });
     return false;
   }
   if (isAudioActive()) {
@@ -2564,7 +2355,6 @@ async function playMeme(meme, reason = "") {
   const cooldown = Number(meme.cooldown_ms || 1200);
   if (now - (lastPlayedAt.get(meme.id) || 0) < cooldown) return;
   lastPlayedAt.set(meme.id, now);
-  lastMemePlayedAt = now;
   appendLine("ai", reason ? "哼，接住了。" : "哼，接住了。");
   lastNekoReplyAt = Date.now();
   const playbackUrl = await resolveMemePlaybackUrl(meme);
@@ -2829,11 +2619,13 @@ async function playUrl(url) {
 
 async function resolveAudioUrl(url) {
   const value = String(url || "");
-  if (!value.startsWith("idb://")) return resolveDefaultAudioUrl(value);
+  if (!value.startsWith("idb://")) return new URL(value, location.href).href;
   if (memeObjectUrls.has(value)) return memeObjectUrls.get(value);
   const blob = await idbGet(`${IDB_AUDIO_PREFIX}${value.slice("idb://".length)}`);
   if (!blob) throw new Error("导入梗库中的音频文件不存在");
-  return objectUrlForBlob(value, blob);
+  const objectUrl = URL.createObjectURL(blob);
+  memeObjectUrls.set(value, objectUrl);
+  return objectUrl;
 }
 
 async function playBlob(blob) {
@@ -3075,146 +2867,6 @@ async function updateMemeTtsSummary() {
   node.textContent = `可预制梗语音 ${eligible.length} 条，当前音色已缓存 ${cached} 条。预制语音只保存在这个浏览器本地。`;
 }
 
-function defaultAudioUrls() {
-  return [...new Set(defaultMemes
-    .map((meme) => String(meme.audio_url || "").trim())
-    .filter((url) => url && !url.startsWith("idb://"))
-    .map((url) => new URL(url, location.href).href))];
-}
-
-function defaultAudioCacheName() {
-  return `${DEFAULT_AUDIO_CACHE_PREFIX}${hashString(defaultAudioUrls().join("\n"))}`;
-}
-
-function canUseDefaultAudioCache() {
-  return Boolean(window.caches);
-}
-
-function isDefaultAudioUrl(url) {
-  const absolute = new URL(url, location.href).href;
-  return defaultAudioUrls().includes(absolute);
-}
-
-async function openDefaultAudioCache() {
-  if (!canUseDefaultAudioCache()) return null;
-  return caches.open(defaultAudioCacheName());
-}
-
-async function cleanupOldDefaultAudioCaches() {
-  if (!canUseDefaultAudioCache()) return;
-  const current = defaultAudioCacheName();
-  const keys = await caches.keys();
-  await Promise.all(keys
-    .filter((key) => key.startsWith(DEFAULT_AUDIO_CACHE_PREFIX) && key !== current)
-    .map((key) => caches.delete(key)));
-}
-
-async function cacheDefaultAudioUrl(url) {
-  const cache = await openDefaultAudioCache();
-  if (!cache) return null;
-  const absolute = new URL(url, location.href).href;
-  const cached = await cache.match(absolute);
-  if (cached) return cached.blob();
-  const response = await fetch(absolute, { cache: "force-cache" });
-  if (!response.ok) return null;
-  await cache.put(absolute, response.clone());
-  return response.blob();
-}
-
-async function getDefaultAudioCachedBlob(url) {
-  const cache = await openDefaultAudioCache();
-  if (!cache) return null;
-  const absolute = new URL(url, location.href).href;
-  const cached = await cache.match(absolute);
-  return cached ? cached.blob() : null;
-}
-
-function objectUrlForBlob(key, blob) {
-  if (memeObjectUrls.has(key)) return memeObjectUrls.get(key);
-  const objectUrl = URL.createObjectURL(blob);
-  memeObjectUrls.set(key, objectUrl);
-  return objectUrl;
-}
-
-async function resolveDefaultAudioUrl(url) {
-  const absolute = new URL(url, location.href).href;
-  if (!isDefaultAudioUrl(absolute)) return absolute;
-  try {
-    const cached = await getDefaultAudioCachedBlob(absolute);
-    if (cached) return objectUrlForBlob(`default-audio:${absolute}`, cached);
-    const fetched = await cacheDefaultAudioUrl(absolute);
-    if (fetched) return objectUrlForBlob(`default-audio:${absolute}`, fetched);
-  } catch (error) {
-    console.debug("default audio cache miss/fallback", { url: absolute, error });
-  }
-  return absolute;
-}
-
-async function defaultAudioCacheCounts() {
-  const urls = defaultAudioUrls();
-  if (!urls.length) return { total: 0, cached: 0, supported: canUseDefaultAudioCache() };
-  const cache = await openDefaultAudioCache();
-  if (!cache) return { total: urls.length, cached: 0, supported: false };
-  let cached = 0;
-  for (const url of urls) {
-    if (await cache.match(url)) cached += 1;
-  }
-  return { total: urls.length, cached, supported: true };
-}
-
-async function updateDefaultAudioCacheSummary() {
-  const node = el("defaultAudioCacheSummary");
-  if (!node) return;
-  const status = await defaultAudioCacheCounts();
-  if (!status.supported) {
-    node.textContent = "当前浏览器不支持默认梗音频缓存；播放时会按需 GET。";
-    return;
-  }
-  node.textContent = `默认梗音频浏览器缓存 ${status.cached}/${status.total} 条。首次打开会后台预缓存，之后播放优先本地缓存。`;
-}
-
-async function startDefaultAudioPrecache() {
-  if (defaultAudioCacheStarted || defaultAudioCacheRunning || !canUseDefaultAudioCache()) return;
-  const urls = defaultAudioUrls();
-  if (!urls.length) return;
-  defaultAudioCacheStarted = true;
-  defaultAudioCacheRunning = true;
-  try {
-    await cleanupOldDefaultAudioCaches();
-    let index = 0;
-    const workers = Array.from({ length: Math.min(DEFAULT_AUDIO_CACHE_CONCURRENCY, urls.length) }, async () => {
-      while (index < urls.length) {
-        const url = urls[index];
-        index += 1;
-        try {
-          await cacheDefaultAudioUrl(url);
-        } catch (error) {
-          console.debug("default audio precache item failed", { url, error });
-        }
-      }
-    });
-    await Promise.all(workers);
-  } finally {
-    defaultAudioCacheRunning = false;
-    updateDefaultAudioCacheSummary().catch((error) => console.debug("default audio summary failed", error));
-  }
-}
-
-async function clearDefaultAudioCache() {
-  if (!canUseDefaultAudioCache()) {
-    setResult("memePackResult", "当前浏览器不支持默认梗音频缓存。", false);
-    return;
-  }
-  const keys = await caches.keys();
-  await Promise.all(keys
-    .filter((key) => key.startsWith(DEFAULT_AUDIO_CACHE_PREFIX))
-    .map((key) => caches.delete(key)));
-  revokeMemeObjectUrls();
-  defaultAudioCacheStarted = false;
-  await updateDefaultAudioCacheSummary();
-  setResult("memePackResult", "已清除默认梗音频浏览器缓存。", true);
-}
-
 async function prebuildMemeTts({ force = false } = {}) {
   collectSettings();
   if (!hasTts()) {
@@ -3288,10 +2940,6 @@ function renderMemePanel() {
   updateMemeTtsSummary().catch((error) => {
     const node = el("memeTtsSummary");
     if (node) node.textContent = `预制梗语音状态读取失败：${error.message || error}`;
-  });
-  updateDefaultAudioCacheSummary().catch((error) => {
-    const node = el("defaultAudioCacheSummary");
-    if (node) node.textContent = `默认梗音频缓存状态读取失败：${error.message || error}`;
   });
   const select = el("memeSelect");
   const previous = selectedMemeId || select.value;
