@@ -2854,7 +2854,7 @@ async function speakReply(text, reason = "", context = {}) {
     try {
       fallbackText = await prepareTtsText(text, { purpose: "browser_tts_fallback", turnId: context.turnId || "" });
     } catch (_) {}
-    appendLine("ai", fallbackText);
+    appendLine("ai", text);
     await speakBrowserFallback(fallbackText, "未配置火山语音");
     return;
   }
@@ -2862,7 +2862,7 @@ async function speakReply(text, reason = "", context = {}) {
   try {
     const speechText = await prepareTtsText(text, { purpose: "neko_reply", turnId: context.turnId || "" });
     const audioBlob = await requestVolcTts(speechText, { purpose: "neko_reply", turnId: context.turnId || "" });
-    appendLine("ai", speechText);
+    appendLine("ai", text);
     await playBlob(audioBlob, { logTtsPlayback: true, turnId: context.turnId || "", text: speechText, reason });
   } catch (error) {
     appendLine("ai", text);
