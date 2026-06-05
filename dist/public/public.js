@@ -162,6 +162,7 @@ const PARTIAL_TRIGGER_DUPLICATE_MS = 3500;
 const PARTIAL_SEMANTIC_LLM_RETRY_MS = 1200;
 const SPEECH_TURN_RECENT_MS = 8000;
 const SPEECH_PLAYBACK_SHADOW_GRACE_MS = 550;
+const XFYUN_ASR_LANGS = new Set(["autodialect", "autominor"]);
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let settings = loadSettings();
@@ -400,7 +401,7 @@ function collectSettings() {
     apiKey: el("xfyunAsrApiKey").value.trim(),
     apiSecret: el("xfyunAsrApiSecret").value.trim(),
     endpoint: el("xfyunAsrEndpoint").value.trim() || DEFAULT_XFYUN_ASR_ENDPOINT,
-    lang: el("xfyunAsrLang").value || "autodialect",
+    lang: normalizeXfyunAsrLang(el("xfyunAsrLang").value),
     punc: el("xfyunAsrPunc").checked,
   };
   settings = {
@@ -456,7 +457,7 @@ function renderSettings() {
   el("xfyunAsrApiKey").value = settings.xfyunAsr?.apiKey || "";
   el("xfyunAsrApiSecret").value = settings.xfyunAsr?.apiSecret || "";
   el("xfyunAsrEndpoint").value = settings.xfyunAsr?.endpoint || DEFAULT_XFYUN_ASR_ENDPOINT;
-  el("xfyunAsrLang").value = settings.xfyunAsr?.lang || "autodialect";
+  el("xfyunAsrLang").value = normalizeXfyunAsrLang(settings.xfyunAsr?.lang);
   el("xfyunAsrPunc").checked = settings.xfyunAsr?.punc !== false;
   el("stopTriggers").value = listToLines(settings.stopTriggers);
   el("aiReplyEnabled").checked = Boolean(settings.aiReplyEnabled);
@@ -581,7 +582,7 @@ function normalizeSettings(raw = {}) {
     apiKey: String(rawXfyunAsr.apiKey ?? "").trim(),
     apiSecret: String(rawXfyunAsr.apiSecret ?? "").trim(),
     endpoint: String(rawXfyunAsr.endpoint ?? DEFAULT_XFYUN_ASR_ENDPOINT).trim() || DEFAULT_XFYUN_ASR_ENDPOINT,
-    lang: String(rawXfyunAsr.lang ?? "autodialect").trim() || "autodialect",
+    lang: normalizeXfyunAsrLang(rawXfyunAsr.lang),
     punc: rawXfyunAsr.punc !== false,
   };
   merged.asrApiKey = merged.volcAsr.apiKey;
@@ -1400,7 +1401,7 @@ function openAsrRelaySocket({ reason = "speech" } = {}) {
           api_key: settings.xfyunAsr?.apiKey || "",
           api_secret: settings.xfyunAsr?.apiSecret || "",
           endpoint: settings.xfyunAsr?.endpoint || DEFAULT_XFYUN_ASR_ENDPOINT,
-          lang: settings.xfyunAsr?.lang || "autodialect",
+          lang: normalizeXfyunAsrLang(settings.xfyunAsr?.lang),
           punc: settings.xfyunAsr?.punc !== false,
         });
       } else {
@@ -2498,7 +2499,7 @@ function handleRecoverableAsrError(message, { reason = "recoverable_timeout_reco
 }
 
 function isFatalAsrError(message) {
-  return /缺少火山 API Key|缺少讯飞|服务端缺少 websockets|ASR relay WebSocket 连接失败|ASR relay 连接超时|鉴权|认证|未授权|unauthorized|forbidden|bad status|rejected|InvalidStatus|HTTP 400|HTTP 401|HTTP 403|Resource ID|开通大模型流式语音识别|signa|appid|api key|api secret/i.test(String(message || ""));
+  return /缺少火山 API Key|缺少讯飞|服务端缺少 websockets|ASR relay WebSocket 连接失败|ASR relay 连接超时|鉴权|认证|未授权|unauthorized|forbidden|bad status|rejected|InvalidStatus|HTTP 400|HTTP 401|HTTP 403|Resource ID|开通大模型流式语音识别|signa|appid|api key|api secret|valid HTTP response|握手失败|语种参数/i.test(String(message || ""));
 }
 
 async function startLocalMicKeepalive() {
@@ -3751,6 +3752,12 @@ function nekoAsrLabel(provider = currentNekoAsrProvider()) {
 
 function currentAsrPacketTargetMs(provider = currentNekoAsrProvider()) {
   return provider === "xfyun" ? XFYUN_ASR_PACKET_TARGET_MS : ASR_PACKET_TARGET_MS;
+}
+
+function normalizeXfyunAsrLang(value) {
+  const raw = String(value || "").trim();
+  if (XFYUN_ASR_LANGS.has(raw)) return raw;
+  return "autodialect";
 }
 
 function hasNekoAsr() {

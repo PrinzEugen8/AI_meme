@@ -42,6 +42,7 @@ DEFAULT_XFYUN_ASR_ENDPOINT = "wss://office-api-ast-dx.iflyaisol.com/ast/communic
 DEFAULT_TTS_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
 ASR_UPSTREAM_FIRST_AUDIO_STALE_MS = 8000
 ASR_FORWARD_AUDIO_GAP_WARN_MS = 3000
+XFYUN_ASR_LANGS = {"autodialect", "autominor"}
 
 MESSAGE_TYPE_FULL_CLIENT_REQUEST = 0x1
 MESSAGE_TYPE_AUDIO_ONLY_REQUEST = 0x2
@@ -521,7 +522,7 @@ async def relay_xfyun_asr(client: WebSocket) -> None:
     access_key_secret = str(start.get("api_secret") or start.get("accessKeySecret") or "").strip()
     endpoint = str(start.get("endpoint") or DEFAULT_XFYUN_ASR_ENDPOINT).strip()
     sample_rate = int(start.get("sample_rate") or 16000)
-    lang = str(start.get("lang") or "autodialect").strip() or "autodialect"
+    lang = _normalize_xfyun_lang(start.get("lang"))
     continuous_streaming = bool(start.get("continuous_streaming"))
     packet_target_ms = int(start.get("packet_target_ms") or 40)
     start_reason = str(start.get("reason") or "speech").strip()[:80] or "speech"
@@ -628,12 +629,13 @@ def _xfyun_signed_url(
     lang: str,
     sample_rate: int,
 ) -> str:
+    clean_lang = _normalize_xfyun_lang(lang)
     utc = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+0800")
     params: dict[str, str] = {
         "accessKeyId": access_key_id,
         "appId": app_id,
         "audio_encode": "pcm_s16le",
-        "lang": lang or "autodialect",
+        "lang": clean_lang,
         "samplerate": str(sample_rate or 16000),
         "utc": utc,
         "uuid": request_id.replace("-", ""),
@@ -650,9 +652,20 @@ def _xfyun_signed_url(
 def _xfyun_connect_error(exc: Exception) -> str:
     message = _safe_error(exc)
     lowered = message.lower()
+    if "valid http response" in lowered:
+        return (
+            "连接讯飞 ASR 失败：讯飞 WebSocket 握手失败，没有返回合法 HTTP 响应。"
+            "请确认 Endpoint 是实时语音转写大模型地址、AppID/accessKeyId/accessKeySecret 正确，"
+            "且语种参数使用 autodialect 或 autominor。"
+        )
     if "400" in message or "401" in message or "403" in message or "rejected" in lowered or "bad status" in lowered:
         message += "。请确认讯飞 AppID、accessKeyId、accessKeySecret 正确，并已开通实时语音转写大模型。"
     return f"连接讯飞 ASR 失败：{message}"
+
+
+def _normalize_xfyun_lang(value: Any) -> str:
+    raw = str(value or "").strip()
+    return raw if raw in XFYUN_ASR_LANGS else "autodialect"
 
 
 async def _browser_to_xfyun(
