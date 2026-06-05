@@ -112,6 +112,14 @@
         <details class="setup-block" id="volcSettingsBlock">
           <summary>火山语音 ASR / TTS</summary>
           <div class="setup-body">
+            <label class="wide-field">
+              <span>AI猫娘 ASR 引擎</span>
+              <select id="nekoAsrProvider">
+                <option value="volc">火山 ASR</option>
+                <option value="xfyun">讯飞实时转写大模型</option>
+              </select>
+            </label>
+            <p class="hint" id="nekoAsrProviderHint"></p>
             <label>
               <span>AppID</span>
               <input id="ttsAppid" type="text" autocomplete="off" />
@@ -120,14 +128,46 @@
               <span>Access Token</span>
               <input id="ttsToken" type="password" autocomplete="off" placeholder="火山 TTS 合成用" />
             </label>
-            <label>
-              <span>ASR API Key</span>
-              <input id="asrApiKey" type="password" autocomplete="off" placeholder="豆包语音新版控制台 API Key，与 LLM Key 不同" />
-            </label>
-            <label>
-              <span>ASR Resource ID</span>
-              <input id="asrResource" type="text" autocomplete="off" />
-            </label>
+            <div class="wide-field provider-fields" id="volcAsrFields">
+              <label>
+                <span>火山 ASR API Key</span>
+                <input id="asrApiKey" type="password" autocomplete="off" placeholder="豆包语音新版控制台 API Key，与 LLM Key 不同" />
+              </label>
+              <label>
+                <span>火山 ASR Resource ID</span>
+                <input id="asrResource" type="text" autocomplete="off" />
+              </label>
+            </div>
+            <div class="wide-field provider-fields" id="xfyunAsrFields">
+              <label>
+                <span>讯飞 AppID</span>
+                <input id="xfyunAsrAppId" type="text" autocomplete="off" placeholder="只保存在本机浏览器" />
+              </label>
+              <label>
+                <span>讯飞 APIKey / accessKeyId</span>
+                <input id="xfyunAsrApiKey" type="password" autocomplete="off" placeholder="只保存在本机浏览器" />
+              </label>
+              <label>
+                <span>讯飞 APISecret / accessKeySecret</span>
+                <input id="xfyunAsrApiSecret" type="password" autocomplete="off" placeholder="只保存在本机浏览器" />
+              </label>
+              <label>
+                <span>讯飞 WebSocket Endpoint</span>
+                <input id="xfyunAsrEndpoint" type="url" autocomplete="off" />
+              </label>
+              <label>
+                <span>讯飞语言</span>
+                <select id="xfyunAsrLang">
+                  <option value="autodialect">中文方言自适应</option>
+                  <option value="zh_cn">普通话</option>
+                  <option value="en_us">英语</option>
+                </select>
+              </label>
+              <label class="switch-line">
+                <input id="xfyunAsrPunc" type="checkbox" />
+                <span>返回标点</span>
+              </label>
+            </div>
             <label>
               <span>音色 ID</span>
               <input id="ttsVoice" type="text" autocomplete="off" placeholder="例如 S_xxxxx" />

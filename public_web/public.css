@@ -381,6 +381,12 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.provider-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+
 .switch-line {
   min-height: 42px;
   display: flex;

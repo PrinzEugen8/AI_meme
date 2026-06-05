@@ -11,6 +11,7 @@ const DEFAULT_AUDIO_CACHE_PREFIX = "ai-meme-neko-default-audio-";
 const DEFAULT_AUDIO_CACHE_CONCURRENCY = 2;
 const DEFAULT_ASR_RESOURCE = "volc.seedasr.sauc.duration";
 const DEFAULT_ASR_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
+const DEFAULT_XFYUN_ASR_ENDPOINT = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1";
 
 const DEFAULT_STOP_TRIGGERS = [
   "停止", "停止播放", "停一下", "停掉", "别放了", "别播了", "不要放了", "不要播了", "闭嘴", "住口", "安静",
@@ -59,6 +60,9 @@ const DEFAULTS = {
   ttsEncoding: "mp3",
   ttsSampleRate: 24000,
   ttsLanguage: "zh",
+  nekoAsrProvider: "volc",
+  volcAsr: null,
+  xfyunAsr: null,
   asrApiKey: "",
   asrResource: DEFAULT_ASR_RESOURCE,
   asrEndpoint: DEFAULT_ASR_ENDPOINT,
@@ -104,7 +108,7 @@ const TTS_LANGUAGE_LABELS = {
 const MODE_HELP = {
   keyword: "关键词触发版：浏览器识别到触发词后直接播放本地梗音频，不需要 LLM/TTS Key。",
   semantic: "语义理解版：浏览器识别语音，关键词直接播；无关键词时通过后端中转 LLM 判断是否接梗。",
-  neko: "AI猫娘版：火山在线 ASR + 后端中转 LLM + 后端中转火山 TTS。",
+  neko: "AI猫娘版：可选火山/讯飞在线 ASR + 后端中转 LLM + 后端中转火山 TTS。",
 };
 
 const LLM_MEME_SYSTEM_PROMPT = (
@@ -137,6 +141,8 @@ const ASR_VAD_PENDING_MAX_MS = 10000;
 const ASR_RECOVERY_BUFFER_MS = 10000;
 const ASR_CONTINUOUS_STREAMING = true;
 const ASR_PACKET_TARGET_MS = 180;
+const XFYUN_ASR_PACKET_TARGET_MS = 40;
+const XFYUN_ASR_PACKET_BYTES = 1280;
 const ASR_VAD_OPEN_RMS_FLOOR = 0.012;
 const ASR_VAD_CLOSE_RMS_FLOOR = 0.008;
 const ASR_VAD_OPEN_PEAK_FLOOR = 0.045;
@@ -154,6 +160,8 @@ const SPEECH_MOBILE_RESTART_MS = 1800;
 const SPEECH_DESKTOP_RESTART_MS = 1200;
 const PARTIAL_TRIGGER_DUPLICATE_MS = 3500;
 const PARTIAL_SEMANTIC_LLM_RETRY_MS = 1200;
+const SPEECH_TURN_RECENT_MS = 8000;
+const SPEECH_PLAYBACK_SHADOW_GRACE_MS = 550;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let settings = loadSettings();
@@ -218,6 +226,12 @@ let speechNetworkFailureNotified = false;
 let speechIdleTimer = null;
 let lastSpeechAt = 0;
 let lastDisclosureMode = null;
+let speechEpoch = 0;
+let activeSpeechTurn = null;
+let committedPartialTurn = null;
+let recentCommittedTexts = [];
+let speechPlaybackShadowActive = false;
+let speechPlaybackShadowUntil = 0;
 let asrLatestPartial = "";
 let asrSilentSince = 0;
 let lastAsrFinalNorm = "";
@@ -303,6 +317,11 @@ function bindUi() {
     if (preset.model) settings.llmModel = preset.model;
     renderSettings();
   });
+  el("nekoAsrProvider").addEventListener("change", () => {
+    collectSettings();
+    settings.nekoAsrProvider = currentNekoAsrProvider();
+    renderSettings();
+  });
   el("saveSettings").addEventListener("click", () => {
     collectSettings();
     saveSettings();
@@ -371,6 +390,19 @@ function saveSettings() {
 }
 
 function collectSettings() {
+  const volcAsr = {
+    apiKey: el("asrApiKey").value.trim(),
+    resource: el("asrResource").value.trim() || DEFAULT_ASR_RESOURCE,
+    endpoint: settings.volcAsr?.endpoint || settings.asrEndpoint || DEFAULT_ASR_ENDPOINT,
+  };
+  const xfyunAsr = {
+    appId: el("xfyunAsrAppId").value.trim(),
+    apiKey: el("xfyunAsrApiKey").value.trim(),
+    apiSecret: el("xfyunAsrApiSecret").value.trim(),
+    endpoint: el("xfyunAsrEndpoint").value.trim() || DEFAULT_XFYUN_ASR_ENDPOINT,
+    lang: el("xfyunAsrLang").value || "autodialect",
+    punc: el("xfyunAsrPunc").checked,
+  };
   settings = {
     ...settings,
     mode: settings.mode || "keyword",
@@ -383,8 +415,12 @@ function collectSettings() {
     ttsVoice: el("ttsVoice").value.trim(),
     ttsResource: el("ttsResource").value.trim() || DEFAULTS.ttsResource,
     ttsLanguage: el("ttsLanguage").value || "zh",
-    asrApiKey: el("asrApiKey").value.trim(),
-    asrResource: el("asrResource").value.trim() || DEFAULT_ASR_RESOURCE,
+    nekoAsrProvider: el("nekoAsrProvider").value || "volc",
+    volcAsr,
+    xfyunAsr,
+    asrApiKey: volcAsr.apiKey,
+    asrResource: volcAsr.resource,
+    asrEndpoint: volcAsr.endpoint,
     stopTriggers: parseListInput(el("stopTriggers").value),
     aiReplyEnabled: el("aiReplyEnabled").checked,
     aiPersona: el("aiPersona").value.trim() || DEFAULT_AI_REPLY_PERSONA,
@@ -413,8 +449,15 @@ function renderSettings() {
   el("ttsVoice").value = settings.ttsVoice || "";
   el("ttsResource").value = settings.ttsResource || DEFAULTS.ttsResource;
   el("ttsLanguage").value = settings.ttsLanguage || "zh";
-  el("asrApiKey").value = settings.asrApiKey || "";
-  el("asrResource").value = settings.asrResource || DEFAULT_ASR_RESOURCE;
+  el("nekoAsrProvider").value = currentNekoAsrProvider();
+  el("asrApiKey").value = settings.volcAsr?.apiKey || settings.asrApiKey || "";
+  el("asrResource").value = settings.volcAsr?.resource || settings.asrResource || DEFAULT_ASR_RESOURCE;
+  el("xfyunAsrAppId").value = settings.xfyunAsr?.appId || "";
+  el("xfyunAsrApiKey").value = settings.xfyunAsr?.apiKey || "";
+  el("xfyunAsrApiSecret").value = settings.xfyunAsr?.apiSecret || "";
+  el("xfyunAsrEndpoint").value = settings.xfyunAsr?.endpoint || DEFAULT_XFYUN_ASR_ENDPOINT;
+  el("xfyunAsrLang").value = settings.xfyunAsr?.lang || "autodialect";
+  el("xfyunAsrPunc").checked = settings.xfyunAsr?.punc !== false;
   el("stopTriggers").value = listToLines(settings.stopTriggers);
   el("aiReplyEnabled").checked = Boolean(settings.aiReplyEnabled);
   el("aiPersona").value = settings.aiPersona || DEFAULT_AI_REPLY_PERSONA;
@@ -439,6 +482,7 @@ function renderSettings() {
   el("localAsrStatus").textContent = SpeechRecognition
     ? "当前浏览器支持 Web Speech。关键词触发和语义理解版使用这个本地识别入口。"
     : "当前浏览器不支持 Web Speech；关键词触发和语义理解版建议使用 Chrome 或 Edge。";
+  syncNekoAsrProviderFields();
   syncSettingsBlocks();
 }
 
@@ -463,13 +507,27 @@ function syncSettingsBlocks() {
   Object.entries(visible).forEach(([id, isVisible]) => setBlockVisible(id, isVisible));
   if (!modeChanged) return;
   const missingLlm = mode !== "keyword" && !hasLlm();
-  const missingVolc = mode === "neko" && (!hasVolcAsr() || !hasTts());
+  const missingNekoAsr = mode === "neko" && (!hasNekoAsr() || !hasTts());
   setBlockOpen("localAsrBlock", mode === "keyword");
   setBlockOpen("llmSettingsBlock", missingLlm || mode === "semantic");
-  setBlockOpen("volcSettingsBlock", missingVolc);
+  setBlockOpen("volcSettingsBlock", missingNekoAsr);
   setBlockOpen("aiReplySettingsBlock", mode === "neko");
   setBlockOpen("stopSettingsBlock", false);
   setBlockOpen("memeSettingsBlock", false);
+}
+
+function syncNekoAsrProviderFields() {
+  const provider = currentNekoAsrProvider();
+  const volcFields = el("volcAsrFields");
+  const xfyunFields = el("xfyunAsrFields");
+  if (volcFields) volcFields.classList.toggle("hidden", provider !== "volc");
+  if (xfyunFields) xfyunFields.classList.toggle("hidden", provider !== "xfyun");
+  const hint = el("nekoAsrProviderHint");
+  if (hint) {
+    hint.textContent = provider === "xfyun"
+      ? "AI猫娘将使用讯飞实时转写大模型；关键词/语义模式仍然只用浏览器 Web Speech。"
+      : "AI猫娘将使用火山 ASR；关键词/语义模式仍然只用浏览器 Web Speech。";
+  }
 }
 
 function setBlockOpen(id, open) {
@@ -510,6 +568,25 @@ function normalizeSettings(raw = {}) {
   merged.ttsResource = String(merged.ttsResource || "").trim();
   if (!merged.ttsResource || merged.ttsResource === "volc.megatts.default") merged.ttsResource = DEFAULTS.ttsResource;
   merged.ttsLanguage = ["zh", "ja"].includes(merged.ttsLanguage) ? merged.ttsLanguage : "zh";
+  merged.nekoAsrProvider = ["volc", "xfyun"].includes(merged.nekoAsrProvider) ? merged.nekoAsrProvider : "volc";
+  const rawVolcAsr = merged.volcAsr && typeof merged.volcAsr === "object" ? merged.volcAsr : {};
+  merged.volcAsr = {
+    apiKey: String(rawVolcAsr.apiKey ?? merged.asrApiKey ?? "").trim(),
+    resource: String(rawVolcAsr.resource ?? merged.asrResource ?? DEFAULT_ASR_RESOURCE).trim() || DEFAULT_ASR_RESOURCE,
+    endpoint: String(rawVolcAsr.endpoint ?? merged.asrEndpoint ?? DEFAULT_ASR_ENDPOINT).trim() || DEFAULT_ASR_ENDPOINT,
+  };
+  const rawXfyunAsr = merged.xfyunAsr && typeof merged.xfyunAsr === "object" ? merged.xfyunAsr : {};
+  merged.xfyunAsr = {
+    appId: String(rawXfyunAsr.appId ?? "").trim(),
+    apiKey: String(rawXfyunAsr.apiKey ?? "").trim(),
+    apiSecret: String(rawXfyunAsr.apiSecret ?? "").trim(),
+    endpoint: String(rawXfyunAsr.endpoint ?? DEFAULT_XFYUN_ASR_ENDPOINT).trim() || DEFAULT_XFYUN_ASR_ENDPOINT,
+    lang: String(rawXfyunAsr.lang ?? "autodialect").trim() || "autodialect",
+    punc: rawXfyunAsr.punc !== false,
+  };
+  merged.asrApiKey = merged.volcAsr.apiKey;
+  merged.asrResource = merged.volcAsr.resource;
+  merged.asrEndpoint = merged.volcAsr.endpoint;
   merged.stopTriggers = toStringList(merged.stopTriggers);
   if (!merged.stopTriggers.length) merged.stopTriggers = [...DEFAULT_STOP_TRIGGERS];
   merged.aiRhythmPreset = RHYTHM_PRESETS[merged.aiRhythmPreset] ? merged.aiRhythmPreset : "chatty";
@@ -583,10 +660,10 @@ function renderSupportNotice() {
   renderRelayStatus();
   const count = memes.length;
   const relayHint = settings.mode !== "keyword" && relayBackendOk === false
-    ? " 当前不是带 /relay 的公网后端，AI、火山 TTS 和火山 ASR 不可用。"
+    ? " 当前不是带 /relay 的公网后端，AI、火山 TTS 和在线 ASR 不可用。"
     : "";
   if (settings.mode === "neko") {
-    el("supportNotice").textContent = `已加载 ${count} 条梗；AI猫娘版需要填写 LLM 和火山语音参数，并通过后端中转模型请求。${relayHint}`;
+    el("supportNotice").textContent = `已加载 ${count} 条梗；AI猫娘版需要填写 LLM、火山 TTS 和猫娘 ASR 参数，并通过后端中转模型请求。${relayHint}`;
     return;
   }
   if (!SpeechRecognition) {
@@ -609,7 +686,7 @@ function renderRelayStatus() {
     return;
   }
   if (relayBackendOk === false) {
-    node.textContent = "后端中继未连接：当前页面可能是 python -m http.server 或纯静态托管。请从仓库根目录运行 python -m public_web.server，或为 /relay 配置反代；否则 AI/火山 TTS/火山 ASR 都不可用。";
+    node.textContent = "后端中继未连接：当前页面可能是 python -m http.server 或纯静态托管。请从仓库根目录运行 python -m public_web.server，或为 /relay 配置反代；否则 AI/火山 TTS/在线 ASR 都不可用。";
     node.classList.add("bad");
     return;
   }
@@ -817,6 +894,7 @@ function chooseLocalMeme(text) {
 function resetPartialTriggerState() {
   return {
     mode: "",
+    epoch: 0,
     normalizedText: "",
     memeId: "",
     kind: "",
@@ -827,28 +905,134 @@ function resetPartialTriggerState() {
   };
 }
 
+function beginSpeechEpoch(reason = "reset") {
+  speechEpoch += 1;
+  activeSpeechTurn = {
+    epoch: speechEpoch,
+    startedAt: Date.now(),
+    lastNorm: "",
+    lastText: "",
+  };
+  committedPartialTurn = null;
+  partialTriggerState = resetPartialTriggerState();
+  logClientEvent("speech_epoch_start", { reason, speech_epoch: speechEpoch });
+  return activeSpeechTurn;
+}
+
+function currentSpeechTurn() {
+  if (!activeSpeechTurn || activeSpeechTurn.epoch !== speechEpoch) return beginSpeechEpoch("lazy_start");
+  return activeSpeechTurn;
+}
+
+function noteSpeechTurnText(text) {
+  const turn = currentSpeechTurn();
+  turn.lastText = String(text || "").trim();
+  turn.lastNorm = normalizeText(turn.lastText);
+  return turn;
+}
+
+function commitSpeechTurn({ mode, text, memeId = "", kind = "", source = "partial" } = {}) {
+  const clean = String(text || "").trim();
+  const norm = normalizeText(clean);
+  if (!norm) return;
+  const turn = currentSpeechTurn();
+  committedPartialTurn = {
+    epoch: turn.epoch,
+    mode: mode || activeCallMode || settings.mode || "",
+    normalizedText: norm,
+    text: clean,
+    memeId: memeId || "",
+    kind: kind || "",
+    source,
+    timestamp: Date.now(),
+  };
+  recentCommittedTexts.push(committedPartialTurn);
+  recentCommittedTexts = recentCommittedTexts
+    .filter((item) => Date.now() - Number(item.timestamp || 0) <= SPEECH_TURN_RECENT_MS)
+    .slice(-12);
+  logClientEvent("speech_turn_committed", {
+    reason: source,
+    speech_epoch: turn.epoch,
+    meme_id: memeId || "",
+    match_kind: kind || "",
+    text: clean,
+  });
+}
+
+function endSpeechEpochAfterFinal(reason = "final") {
+  beginSpeechEpoch(reason);
+}
+
+function isRelatedNorm(left, right) {
+  const a = String(left || "");
+  const b = String(right || "");
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+function shouldIgnoreSpeechPlaybackShadow(text, isFinal) {
+  if (!speechPlaybackShadowActive && Date.now() > speechPlaybackShadowUntil) return false;
+  logClientEvent("playback_shadow_result", {
+    speech_epoch: speechEpoch,
+    is_final: Boolean(isFinal),
+    text,
+  });
+  return true;
+}
+
+function beginSpeechPlaybackShadow(meta = {}) {
+  if (!isLocalSpeechMode()) return;
+  speechPlaybackShadowActive = true;
+  speechPlaybackShadowUntil = Date.now() + 60 * 1000;
+  beginSpeechEpoch("meme_playback_start");
+  logClientEvent("speech_playback_shadow_start", {
+    meme_id: meta.memeId || "",
+    source: meta.source || "",
+    match_kind: meta.matchKind || "",
+  });
+}
+
+function finishSpeechPlaybackShadow(meta = {}) {
+  if (!speechPlaybackShadowActive && Date.now() > speechPlaybackShadowUntil) return;
+  speechPlaybackShadowActive = false;
+  speechPlaybackShadowUntil = Date.now() + SPEECH_PLAYBACK_SHADOW_GRACE_MS;
+  beginSpeechEpoch("meme_playback_end");
+  logClientEvent("speech_playback_shadow_end", {
+    meme_id: meta.memeId || "",
+    source: meta.source || "",
+  });
+}
+
+function isLocalSpeechMode() {
+  const mode = activeCallMode || settings.mode || "keyword";
+  return callActive && (mode === "keyword" || mode === "semantic");
+}
+
 async function handlePartialTranscript(text) {
   const mode = activeCallMode || settings.mode || "keyword";
   if (!callActive || mode === "neko") return;
   const clean = String(text || "").trim();
   const norm = normalizeText(clean);
   if (!clean || !norm || isWeakNoise(clean)) return;
-  logClientEvent("speech_partial_seen", { text: clean });
+  const turn = noteSpeechTurnText(clean);
+  logClientEvent("speech_partial_seen", { speech_epoch: turn.epoch, text: clean });
   if (mode === "keyword") {
-    await handleKeywordPartial(clean, norm);
+    await handleKeywordPartial(clean, norm, turn);
     return;
   }
   if (mode === "semantic") {
-    await handleSemanticPartial(clean, norm);
+    await handleSemanticPartial(clean, norm, turn);
   }
 }
 
-async function handleKeywordPartial(text, norm) {
+async function handleKeywordPartial(text, norm, turn = currentSpeechTurn()) {
   const match = bestPartialLocalMatch(text, { allowTriggers: true });
   if (!match) return;
   if (isDuplicatePartialTrigger({ mode: "keyword", norm, memeId: match.id, kind: match._kind })) return;
   markPartialTriggered({ mode: "keyword", norm, memeId: match.id, kind: match._kind });
+  commitSpeechTurn({ mode: "keyword", text, memeId: match.id, kind: match._kind, source: "keyword_partial" });
   logClientEvent("keyword_partial_match", {
+    speech_epoch: turn.epoch,
     meme_id: match.id,
     match_kind: match._kind,
     reason: match._phrase || "",
@@ -857,12 +1041,14 @@ async function handleKeywordPartial(text, norm) {
   await playMeme(match, "关键词命中", { source: "partial", matchKind: match._kind, text });
 }
 
-async function handleSemanticPartial(text, norm) {
+async function handleSemanticPartial(text, norm, turn = currentSpeechTurn()) {
   const direct = bestPartialLocalMatch(text, { allowTriggers: false });
   if (direct) {
     if (isDuplicatePartialTrigger({ mode: "semantic", norm, memeId: direct.id, kind: "direct" })) return;
     markPartialTriggered({ mode: "semantic", norm, memeId: direct.id, kind: "direct" });
+    commitSpeechTurn({ mode: "semantic", text, memeId: direct.id, kind: "direct", source: "semantic_partial_direct" });
     logClientEvent("semantic_partial_direct_match", {
+      speech_epoch: turn.epoch,
       meme_id: direct.id,
       match_kind: direct._kind,
       reason: direct._phrase || "",
@@ -877,10 +1063,12 @@ async function handleSemanticPartial(text, norm) {
   if (isDuplicatePartialTrigger({ mode: "semantic", norm, memeId: trigger.id, kind: "trigger" })) return;
   if (shouldSkipSemanticPartialLlm(norm)) return;
   markPartialTriggered({ mode: "semantic", norm, memeId: trigger.id, kind: "trigger_llm_pending" });
+  commitSpeechTurn({ mode: "semantic", text, memeId: trigger.id, kind: "trigger", source: "semantic_partial_llm" });
   partialTriggerState.pendingNorm = norm;
   partialTriggerState.pendingStartedAt = Date.now();
   const startedAt = performance.now();
   logClientEvent("semantic_partial_llm_start", {
+    speech_epoch: turn.epoch,
     meme_id: trigger.id,
     match_kind: trigger._kind,
     reason: trigger._phrase || "",
@@ -892,6 +1080,7 @@ async function handleSemanticPartial(text, norm) {
     const decision = await pending;
     const elapsedMs = Math.round(performance.now() - startedAt);
     logClientEvent("semantic_partial_llm_done", {
+      speech_epoch: turn.epoch,
       action: decision.action || "",
       confidence: decisionConfidence(decision),
       elapsed_ms: elapsedMs,
@@ -905,6 +1094,7 @@ async function handleSemanticPartial(text, norm) {
     }
   } catch (error) {
     logClientEvent("semantic_partial_llm_done", {
+      speech_epoch: turn.epoch,
       ok: false,
       elapsed_ms: Math.round(performance.now() - startedAt),
       reason: error.message || String(error),
@@ -942,7 +1132,13 @@ function partialMatchScore(text, meme, { allowTriggers = true, directOnly = fals
 
 function isDuplicatePartialTrigger({ mode, norm, memeId, kind }) {
   const now = Date.now();
+  for (const item of recentCommittedTexts.slice().reverse()) {
+    if (item.mode !== mode || now - Number(item.timestamp || 0) > SPEECH_TURN_RECENT_MS) continue;
+    if (memeId && item.memeId === memeId) return true;
+    if (isRelatedNorm(norm, item.normalizedText)) return true;
+  }
   if (!partialTriggerState.timestamp || now - partialTriggerState.timestamp > PARTIAL_TRIGGER_DUPLICATE_MS) return false;
+  if (partialTriggerState.epoch && partialTriggerState.epoch !== speechEpoch) return false;
   if (partialTriggerState.mode !== mode) return false;
   if (memeId && partialTriggerState.memeId === memeId) return true;
   if (partialTriggerState.normalizedText && norm) {
@@ -956,6 +1152,7 @@ function markPartialTriggered({ mode, norm, memeId, kind }) {
   partialTriggerState = {
     ...partialTriggerState,
     mode,
+    epoch: speechEpoch,
     normalizedText: norm,
     memeId: memeId || "",
     kind: kind || "",
@@ -974,11 +1171,25 @@ function shouldSkipFinalAfterPartial(text) {
   const mode = activeCallMode || settings.mode || "keyword";
   if (!["keyword", "semantic"].includes(mode)) return false;
   const norm = normalizeText(text);
-  if (!norm || !partialTriggerState.timestamp) return false;
+  if (!norm) return false;
+  const now = Date.now();
+  if (committedPartialTurn && committedPartialTurn.mode === mode && now - Number(committedPartialTurn.timestamp || 0) <= SPEECH_TURN_RECENT_MS) {
+    if (committedPartialTurn.epoch === speechEpoch || isRelatedNorm(norm, committedPartialTurn.normalizedText)) return true;
+    const match = bestPartialLocalMatch(text, { allowTriggers: true });
+    if (match && committedPartialTurn.memeId && match.id === committedPartialTurn.memeId) return true;
+  }
+  for (const item of recentCommittedTexts.slice().reverse()) {
+    if (item.mode !== mode || now - Number(item.timestamp || 0) > SPEECH_TURN_RECENT_MS) continue;
+    if (isRelatedNorm(norm, item.normalizedText)) return true;
+    const match = bestPartialLocalMatch(text, { allowTriggers: true });
+    if (match && item.memeId && match.id === item.memeId) return true;
+  }
+  if (!partialTriggerState.timestamp) return false;
   if (Date.now() - partialTriggerState.timestamp > PARTIAL_TRIGGER_DUPLICATE_MS) return false;
+  if (partialTriggerState.epoch && partialTriggerState.epoch !== speechEpoch && !isRelatedNorm(norm, partialTriggerState.normalizedText)) return false;
   if (partialTriggerState.mode !== mode) return false;
   if (partialTriggerState.normalizedText === norm) return true;
-  if (partialTriggerState.normalizedText && (norm.includes(partialTriggerState.normalizedText) || partialTriggerState.normalizedText.includes(norm))) return true;
+  if (partialTriggerState.normalizedText && isRelatedNorm(norm, partialTriggerState.normalizedText)) return true;
   const match = mode === "keyword"
     ? bestPartialLocalMatch(text, { allowTriggers: true })
     : bestPartialLocalMatch(text, { allowTriggers: true });
@@ -1045,7 +1256,7 @@ function enterCallScreen() {
   confirmedDialogue = [];
   speechNetworkErrorCount = 0;
   speechNetworkFailureNotified = false;
-  partialTriggerState = resetPartialTriggerState();
+  beginSpeechEpoch("call_start");
   resetAsrTextState();
   el("callStatus").textContent = "准备通话";
   appendLine("ai", "我在，开始吧。");
@@ -1062,7 +1273,9 @@ function stopCall() {
   stopLocalMicKeepalive();
   stopVolcRecognition();
   clearPendingNekoReply();
-  partialTriggerState = resetPartialTriggerState();
+  speechPlaybackShadowActive = false;
+  speechPlaybackShadowUntil = 0;
+  beginSpeechEpoch("call_stop");
   stopAudio();
   callScreen.classList.add("hidden");
   preCall.classList.remove("hidden");
@@ -1080,7 +1293,7 @@ function switchActiveCallMode(mode) {
   recognitionManualStop = false;
   speechNetworkErrorCount = 0;
   speechNetworkFailureNotified = false;
-  partialTriggerState = resetPartialTriggerState();
+  beginSpeechEpoch("mode_switch");
   resetAsrTextState();
   partialLine = null;
   if (isNekoCallActive()) {
@@ -1088,7 +1301,7 @@ function switchActiveCallMode(mode) {
     stopRecognition();
     stopLocalMicKeepalive();
     startVolcRecognition().catch((error) => {
-      appendLine("system", `火山 ASR 启动失败：${error.message || error}`);
+      appendLine("system", `${nekoAsrLabel()} ASR 启动失败：${error.message || error}`);
       el("callStatus").textContent = "语音识别不可用";
     });
     return;
@@ -1112,6 +1325,8 @@ function isNekoCallActive() {
 async function startVolcRecognition() {
   collectSettings();
   if (!isNekoCallActive()) return;
+  const provider = currentNekoAsrProvider();
+  const label = nekoAsrLabel(provider);
   stopLocalMicKeepalive();
   if (!isSpeechSecureContext()) {
     markRecognitionBlocked("AI猫娘在线 ASR 需要 HTTPS；localhost/127.0.0.1 本地预览可以直接用。");
@@ -1121,8 +1336,8 @@ async function startVolcRecognition() {
     markRecognitionBlocked("当前浏览器没有可用的麦克风采集接口。");
     return;
   }
-  if (!hasVolcAsr()) {
-    markRecognitionBlocked("AI猫娘版需要先在设置里填写豆包语音 ASR API Key 和 ASR Resource ID。");
+  if (!hasNekoAsr()) {
+    markRecognitionBlocked(`AI猫娘版需要先在设置里填写${label} ASR 参数。`);
     return;
   }
   try {
@@ -1136,21 +1351,22 @@ async function startVolcRecognition() {
     });
     resetAsrVadState();
     setupVolcAudioPipeline(asrMediaStream);
-    el("callStatus").textContent = "正在连接火山 ASR";
+    el("callStatus").textContent = `正在连接${label} ASR`;
     ensureAsrRelaySocket({ reason: "call_start", keepIdle: true }).catch(handleAsrOpenError);
   } catch (error) {
     stopVolcRecognition();
-    markRecognitionBlocked(`火山 ASR 启动失败：${error.message || error}`);
+    markRecognitionBlocked(`${label} ASR 启动失败：${error.message || error}`);
   }
 }
 
 function openAsrRelaySocket({ reason = "speech" } = {}) {
   return new Promise((resolve, reject) => {
     if (!isNekoCallActive()) {
-      reject(new Error("当前模式不使用火山 ASR"));
+      reject(new Error("当前模式不使用在线 ASR"));
       return;
     }
-    const socket = new WebSocket(resolveRelayWs("/relay/volc-asr"));
+    const provider = currentNekoAsrProvider();
+    const socket = new WebSocket(resolveRelayWs(provider === "xfyun" ? "/relay/xfyun-asr" : "/relay/volc-asr"));
     const timer = window.setTimeout(() => {
       reject(new Error("ASR relay ready 超时"));
       try { socket.__expectedClose = true; } catch (_) {}
@@ -1160,26 +1376,42 @@ function openAsrRelaySocket({ reason = "speech" } = {}) {
     try {
       socket.__asrReady = false;
       socket.__asrHadAudio = false;
+      socket.__asrProvider = provider;
     } catch (_) {}
     socket.onopen = () => {
       if (!isNekoCallActive()) {
         window.clearTimeout(timer);
         try { socket.__expectedClose = true; } catch (_) {}
         try { socket.close(); } catch (_) {}
-        reject(new Error("当前模式不使用火山 ASR"));
+        reject(new Error("当前模式不使用在线 ASR"));
         return;
       }
-      socket.send(JSON.stringify({
+      const payload = {
         type: "start",
         reason,
-        api_key: settings.asrApiKey,
-        resource_id: settings.asrResource || DEFAULT_ASR_RESOURCE,
-        endpoint: settings.asrEndpoint || DEFAULT_ASR_ENDPOINT,
+        provider,
         sample_rate: 16000,
-        end_window_size: 1200,
         continuous_streaming: ASR_CONTINUOUS_STREAMING,
-        packet_target_ms: ASR_PACKET_TARGET_MS,
-      }));
+        packet_target_ms: currentAsrPacketTargetMs(provider),
+      };
+      if (provider === "xfyun") {
+        Object.assign(payload, {
+          app_id: settings.xfyunAsr?.appId || "",
+          api_key: settings.xfyunAsr?.apiKey || "",
+          api_secret: settings.xfyunAsr?.apiSecret || "",
+          endpoint: settings.xfyunAsr?.endpoint || DEFAULT_XFYUN_ASR_ENDPOINT,
+          lang: settings.xfyunAsr?.lang || "autodialect",
+          punc: settings.xfyunAsr?.punc !== false,
+        });
+      } else {
+        Object.assign(payload, {
+          api_key: settings.volcAsr?.apiKey || settings.asrApiKey,
+          resource_id: settings.volcAsr?.resource || settings.asrResource || DEFAULT_ASR_RESOURCE,
+          endpoint: settings.volcAsr?.endpoint || settings.asrEndpoint || DEFAULT_ASR_ENDPOINT,
+          end_window_size: 1200,
+        });
+      }
+      socket.send(JSON.stringify(payload));
     };
     socket.onerror = () => {
       window.clearTimeout(timer);
@@ -1487,10 +1719,25 @@ function clearAsrRecoveryBuffer() {
 
 function queueAsrFrame(pcm, durationMs = 0) {
   if (!pcm?.byteLength || recognitionBlocked || !isNekoCallActive()) return;
+  if (currentNekoAsrProvider() === "xfyun") {
+    queueXfyunAsrFrame(pcm, durationMs);
+    return;
+  }
   asrPacketFrames.push({ pcm, durationMs });
   asrPacketMs += durationMs || 0;
-  if (asrPacketMs < ASR_PACKET_TARGET_MS && asrPacketFrames.length < 8) return;
+  if (asrPacketMs < currentAsrPacketTargetMs() && asrPacketFrames.length < 8) return;
   flushAsrPacketBuffer();
+}
+
+function queueXfyunAsrFrame(pcm, durationMs = 0) {
+  const bytes = new Uint8Array(pcm);
+  if (!bytes.byteLength) return;
+  const totalChunks = Math.max(1, Math.ceil(bytes.byteLength / XFYUN_ASR_PACKET_BYTES));
+  const chunkDuration = (durationMs || currentAsrPacketTargetMs("xfyun") * totalChunks) / totalChunks;
+  for (let offset = 0; offset < bytes.byteLength; offset += XFYUN_ASR_PACKET_BYTES) {
+    const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + XFYUN_ASR_PACKET_BYTES));
+    enqueueAsrPacket(chunk.buffer, chunkDuration);
+  }
 }
 
 function flushAsrPacketBuffer() {
@@ -1544,11 +1791,11 @@ function flushAsrPendingFrames() {
 function ensureAsrRelaySocket({ reason = "speech", keepIdle = false } = {}) {
   if (!isNekoCallActive()) {
     closeAsrRelaySocket({ sendStop: true, dropPending: true });
-    return Promise.reject(new Error("当前模式不使用火山 ASR"));
+    return Promise.reject(new Error("当前模式不使用在线 ASR"));
   }
   if (isAsrRelayReady()) return Promise.resolve(asrSocket);
   if (asrSocketOpening) return asrSocketOpening;
-  el("callStatus").textContent = "正在连接火山 ASR";
+  el("callStatus").textContent = `正在连接${nekoAsrLabel()} ASR`;
   asrRelayState = "opening";
   const serial = ++asrSocketSerial;
   asrSocketOpening = openAsrRelaySocket({ reason })
@@ -1588,7 +1835,8 @@ function handleAsrOpenError(error) {
   if (recognitionBlocked) return;
   closeAsrRelaySocket({ sendStop: false, reason: "open_error", dropPending: false });
   if (isNekoCallActive()) {
-    const message = humanizeAsrError(`火山 ASR 连接失败：${error.message || error}`);
+    const label = nekoAsrLabel();
+    const message = humanizeAsrError(`${label} ASR 连接失败：${error.message || error}`);
     if (isFatalAsrError(message)) {
       if (!isDuplicateAsrError(message)) appendLine("system", message);
       recognitionBlocked = true;
@@ -1596,7 +1844,7 @@ function handleAsrOpenError(error) {
       el("callStatus").textContent = "语音识别不可用";
       return;
     }
-    el("callStatus").textContent = "正在重连火山 ASR";
+    el("callStatus").textContent = `正在重连${label} ASR`;
     if (!isDuplicateAsrError(message)) appendLine("system", `${message}，正在自动重连。`);
     scheduleAsrReconnect("open_error_retry", 1500);
   }
@@ -2184,19 +2432,20 @@ function trimNormalizedPrefix(raw, prefixNorm) {
 
 function humanizeAsrError(raw) {
   let text = String(raw || "").trim();
+  const label = /讯飞|xfyun/i.test(text) ? "讯飞" : nekoAsrLabel();
   try {
     const parsed = JSON.parse(text);
     text = findErrorText(parsed) || text;
   } catch (_) {}
   const lower = text.toLowerCase();
   if (lower.includes("ready_idle_stale") || lower.includes("stale") || text.includes("空闲过久") || text.includes("换新连接")) {
-    return "火山 ASR 本轮连接已过期，正在换新连接。";
+    return `${label} ASR 本轮连接已过期，正在换新连接。`;
   }
   if (lower.includes("rpc timeout") || lower.includes("waiting next packet timeout") || lower.includes("timeout")) {
-    return "火山 ASR 本轮超时，正在自动重连。";
+    return `${label} ASR 本轮超时，正在自动重连。`;
   }
   if (lower.includes("session has ended") || lower.includes("session ended")) {
-    return "火山 ASR 本轮会话已结束，正在自动重连。";
+    return `${label} ASR 本轮会话已结束，正在自动重连。`;
   }
   return text.replace(/\s+/g, " ").slice(0, 180) || "ASR relay 异常";
 }
@@ -2236,9 +2485,9 @@ function handleRecoverableAsrError(message, { reason = "recoverable_timeout_reco
   closeAsrRelaySocket({ sendStop: false, reason, dropPending: false });
   resetAsrVadState({ dropPending: false });
   if (!isNekoCallActive()) return;
-  el("callStatus").textContent = "正在重连火山 ASR";
+  el("callStatus").textContent = `正在重连${nekoAsrLabel()} ASR`;
   const notice = asrRecoverableErrorCount >= ASR_RECOVERABLE_ERROR_NOTICE_EVERY
-    ? `${message} 如果连续出现，请检查火山 ASR 服务状态或网络。`
+    ? `${message} 如果连续出现，请检查${nekoAsrLabel()} ASR 服务状态或网络。`
     : message;
   const now = Date.now();
   if (now - asrRecoverableNoticeAt > 60000 && !isDuplicateAsrError(notice)) {
@@ -2249,7 +2498,7 @@ function handleRecoverableAsrError(message, { reason = "recoverable_timeout_reco
 }
 
 function isFatalAsrError(message) {
-  return /缺少火山 API Key|服务端缺少 websockets|ASR relay WebSocket 连接失败|ASR relay 连接超时|鉴权|认证|未授权|unauthorized|forbidden|bad status|rejected|InvalidStatus|HTTP 400|HTTP 401|HTTP 403|Resource ID|开通大模型流式语音识别/i.test(String(message || ""));
+  return /缺少火山 API Key|缺少讯飞|服务端缺少 websockets|ASR relay WebSocket 连接失败|ASR relay 连接超时|鉴权|认证|未授权|unauthorized|forbidden|bad status|rejected|InvalidStatus|HTTP 400|HTTP 401|HTTP 403|Resource ID|开通大模型流式语音识别|signa|appid|api key|api secret/i.test(String(message || ""));
 }
 
 async function startLocalMicKeepalive() {
@@ -2311,6 +2560,7 @@ function startRecognition() {
   recognition.interimResults = true;
   recognition.onstart = () => {
     recognizing = true;
+    beginSpeechEpoch("recognition_start");
     el("callStatus").textContent = "正在通话";
   };
   recognition.onend = () => {
@@ -2347,13 +2597,18 @@ function startRecognition() {
         else addUserPartial(text);
         continue;
       }
+      const turn = noteSpeechTurnText(text);
+      if (shouldIgnoreSpeechPlaybackShadow(text, result.isFinal)) continue;
       if (result.isFinal) {
         addUserFinal(text);
         if (shouldSkipFinalAfterPartial(text)) {
-          logClientEvent("speech_final_skip_partial_duplicate", { reason: "partial_duplicate", text });
+          logClientEvent("speech_final_skip_partial_duplicate", { reason: "partial_duplicate", speech_epoch: turn.epoch, text });
+          endSpeechEpochAfterFinal("final_duplicate");
           continue;
         }
-        handleTranscript(text).catch((error) => appendLine("system", error.message || String(error)));
+        handleTranscript(text, { speechEpoch: turn.epoch })
+          .catch((error) => appendLine("system", error.message || String(error)))
+          .finally(() => endSpeechEpochAfterFinal("final_dispatched"));
       } else {
         addUserPartial(text);
         handlePartialTranscript(text).catch((error) => console.debug("partial transcript failed", error));
@@ -2441,7 +2696,7 @@ function speechErrorMessage(error) {
     "not-allowed": "麦克风权限被拒绝；请在浏览器地址栏里允许麦克风。",
     "service-not-allowed": "浏览器语音识别服务不可用；请换 Chrome/Edge。",
     "audio-capture": "没有检测到可用麦克风；请检查设备输入。",
-    network: "浏览器 Web Speech 网络识别服务连接失败；免费模式无法继续识别，请换网络/Chrome/Edge，或切到 AI猫娘使用火山 ASR。",
+    network: "浏览器 Web Speech 网络识别服务连接失败；免费模式无法继续识别，请换网络/Chrome/Edge，或切到 AI猫娘使用在线 ASR。",
     "no-speech": "没有识别到说话声，我会继续听。",
     aborted: "语音识别已停止。",
   };
@@ -3014,6 +3269,12 @@ async function playMeme(meme, reason = "", meta = {}) {
     matchKind: meta.matchKind || "",
     source: meta.source || "",
     text: meta.text || "",
+    onPlaybackPrepare: () => beginSpeechPlaybackShadow({
+      memeId: meme.id,
+      matchKind: meta.matchKind || "",
+      source: meta.source || "",
+    }),
+    onPlaybackEnd: () => finishSpeechPlaybackShadow({ memeId: meme.id, source: meta.source || "" }),
   });
 }
 
@@ -3299,6 +3560,7 @@ function concatUint8(chunks) {
 
 async function playUrl(url, options = {}) {
   stopAudio();
+  if (typeof options.onPlaybackPrepare === "function") options.onPlaybackPrepare();
   const absoluteUrl = await resolveAudioUrl(url);
   currentAudio = new Audio(absoluteUrl);
   currentAudio.preload = "auto";
@@ -3312,6 +3574,7 @@ async function playUrl(url, options = {}) {
         text: options.text || "",
       });
     }
+    if (typeof options.onPlaybackEnd === "function") options.onPlaybackEnd();
     tryPlayPendingNekoReply().catch((error) => console.debug("pending neko reply failed", error));
   }, { once: true });
   try {
@@ -3332,6 +3595,7 @@ async function playUrl(url, options = {}) {
       });
     }
   } catch (error) {
+    if (typeof options.onPlaybackEnd === "function") options.onPlaybackEnd();
     appendLine("system", `音频播放失败：${error.message || error}。请点一次页面后重试，手机浏览器也要确认没有静音拦截。`);
     throw error;
   }
@@ -3359,6 +3623,7 @@ async function playBlob(blob, options = {}) {
 
 function stopAudio() {
   stopBrowserTts();
+  if (speechPlaybackShadowActive) finishSpeechPlaybackShadow({ source: "stop_audio" });
   if (!currentAudio) return;
   try {
     currentAudio.pause();
@@ -3476,8 +3741,28 @@ function hasTts() {
   return Boolean(settings.ttsAppid && settings.ttsToken && settings.ttsVoice);
 }
 
+function currentNekoAsrProvider(provider = settings.nekoAsrProvider) {
+  return provider === "xfyun" ? "xfyun" : "volc";
+}
+
+function nekoAsrLabel(provider = currentNekoAsrProvider()) {
+  return provider === "xfyun" ? "讯飞" : "火山";
+}
+
+function currentAsrPacketTargetMs(provider = currentNekoAsrProvider()) {
+  return provider === "xfyun" ? XFYUN_ASR_PACKET_TARGET_MS : ASR_PACKET_TARGET_MS;
+}
+
+function hasNekoAsr() {
+  return currentNekoAsrProvider() === "xfyun" ? hasXfyunAsr() : hasVolcAsr();
+}
+
 function hasVolcAsr() {
-  return Boolean(settings.asrApiKey && (settings.asrResource || DEFAULT_ASR_RESOURCE));
+  return Boolean((settings.volcAsr?.apiKey || settings.asrApiKey) && (settings.volcAsr?.resource || settings.asrResource || DEFAULT_ASR_RESOURCE));
+}
+
+function hasXfyunAsr() {
+  return Boolean(settings.xfyunAsr?.appId && settings.xfyunAsr?.apiKey && settings.xfyunAsr?.apiSecret);
 }
 
 

@@ -2,16 +2,20 @@
 
 import argparse
 import asyncio
+import base64
 import gzip
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import struct
 import sys
+from datetime import datetime, timedelta, timezone
 from time import perf_counter, time
 import uuid
 from typing import Any
+from urllib.parse import urlencode
 
 
 def _ensure_repo_root() -> Path:
@@ -34,6 +38,7 @@ from fastapi.staticfiles import StaticFiles
 
 DEFAULT_ASR_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
 DEFAULT_ASR_RESOURCE = "volc.seedasr.sauc.duration"
+DEFAULT_XFYUN_ASR_ENDPOINT = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1"
 DEFAULT_TTS_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
 ASR_UPSTREAM_FIRST_AUDIO_STALE_MS = 8000
 ASR_FORWARD_AUDIO_GAP_WARN_MS = 3000
@@ -102,6 +107,9 @@ async def relay_client_event(payload: dict[str, Any]) -> dict[str, bool]:
         "purpose",
         "target_language",
         "audio_bytes",
+        "provider",
+        "speech_epoch",
+        "is_final",
     }
     for key in allowed:
         if key not in payload:
@@ -305,6 +313,7 @@ async def relay_volc_asr(client: WebSocket) -> None:
     request_id = str(uuid.uuid4())
     asr_state = _new_asr_state()
     asr_state["request_id"] = request_id
+    asr_state["provider"] = "volc"
     endpoint = DEFAULT_ASR_ENDPOINT
     resource_id = DEFAULT_ASR_RESOURCE
     await client.accept()
@@ -486,6 +495,441 @@ async def relay_volc_asr(client: WebSocket) -> None:
                     asr_state["close_error_detail"] = _safe_error(exc)
     _log_asr_event(asr_state, started, "relay_closed", endpoint=endpoint, resource_id=resource_id, logid=logid)
     _log_asr_close(asr_state, started, status="closed", endpoint=endpoint, resource_id=resource_id, logid=logid)
+
+
+@app.websocket("/relay/xfyun-asr")
+async def relay_xfyun_asr(client: WebSocket) -> None:
+    started = perf_counter()
+    request_id = str(uuid.uuid4())
+    asr_state = _new_asr_state()
+    asr_state["request_id"] = request_id
+    asr_state["provider"] = "xfyun"
+    endpoint = DEFAULT_XFYUN_ASR_ENDPOINT
+    resource_id = "xfyun.rtasr_llm"
+    await client.accept()
+    _log_asr_event(asr_state, started, "client_ws_accepted", endpoint=endpoint, resource_id=resource_id)
+    try:
+        start = await client.receive_json()
+    except Exception:
+        await client.send_json({"type": "error", "message": "讯飞 ASR relay 缺少启动参数。"})
+        await client.close()
+        _log_asr_close(asr_state, started, status="start_error", endpoint=endpoint, resource_id=resource_id, error_type="missing_start")
+        return
+
+    app_id = str(start.get("app_id") or start.get("appId") or "").strip()
+    access_key_id = str(start.get("api_key") or start.get("accessKeyId") or "").strip()
+    access_key_secret = str(start.get("api_secret") or start.get("accessKeySecret") or "").strip()
+    endpoint = str(start.get("endpoint") or DEFAULT_XFYUN_ASR_ENDPOINT).strip()
+    sample_rate = int(start.get("sample_rate") or 16000)
+    lang = str(start.get("lang") or "autodialect").strip() or "autodialect"
+    continuous_streaming = bool(start.get("continuous_streaming"))
+    packet_target_ms = int(start.get("packet_target_ms") or 40)
+    start_reason = str(start.get("reason") or "speech").strip()[:80] or "speech"
+    asr_state["client_start_reason"] = start_reason
+    asr_state["continuous_streaming"] = continuous_streaming
+    asr_state["packet_target_ms"] = packet_target_ms
+    if "reconnect" in start_reason or "rotate" in start_reason:
+        asr_state["reconnect_reason"] = start_reason
+    _log_asr_event(
+        asr_state,
+        started,
+        "client_start_received",
+        endpoint=endpoint,
+        resource_id=resource_id,
+        sample_rate=sample_rate,
+        lang=lang,
+        continuous_streaming=continuous_streaming,
+        packet_target_ms=packet_target_ms,
+        client_start_reason=start_reason,
+        has_app_id=bool(app_id),
+        has_api_key=bool(access_key_id),
+        has_api_secret=bool(access_key_secret),
+    )
+    if not app_id or not access_key_id or not access_key_secret:
+        await client.send_json({"type": "error", "message": "讯飞 ASR relay 缺少 AppID、APIKey/accessKeyId 或 APISecret/accessKeySecret。"})
+        await client.close()
+        _log_asr_close(asr_state, started, status="start_error", endpoint=endpoint, resource_id=resource_id, error_type="missing_xfyun_credentials")
+        return
+
+    try:
+        import websockets
+    except Exception:
+        await client.send_json({"type": "error", "message": "服务端缺少 websockets 依赖。"})
+        await client.close()
+        _log_asr_close(asr_state, started, status="start_error", endpoint=endpoint, resource_id=resource_id, error_type="missing_websockets")
+        return
+
+    signed_endpoint = _xfyun_signed_url(
+        endpoint=endpoint,
+        app_id=app_id,
+        access_key_id=access_key_id,
+        access_key_secret=access_key_secret,
+        request_id=request_id,
+        lang=lang,
+        sample_rate=sample_rate,
+    )
+    try:
+        asr_state["upstream_connect_started_at"] = perf_counter()
+        _log_asr_event(asr_state, started, "upstream_connect_start", endpoint=endpoint, resource_id=resource_id)
+        upstream = await _connect_websocket(websockets, signed_endpoint, {})
+    except Exception as exc:
+        asr_state["connect_error_detail"] = _safe_error(exc)
+        _log_asr_event(
+            asr_state,
+            started,
+            "upstream_connect_error",
+            endpoint=endpoint,
+            resource_id=resource_id,
+            error_type=type(exc).__name__,
+            error_detail=_safe_error(exc),
+            connect_elapsed_ms=_state_delta_ms(asr_state, "upstream_connect_started_at", None),
+        )
+        await client.send_json({"type": "error", "message": _xfyun_connect_error(exc)})
+        await client.close()
+        _log_asr_close(asr_state, started, status="connect_error", endpoint=endpoint, resource_id=resource_id, error_type=type(exc).__name__)
+        return
+
+    asr_state["upstream_connect_at"] = perf_counter()
+    _log_asr_event(
+        asr_state,
+        started,
+        "upstream_connect_ok",
+        endpoint=endpoint,
+        resource_id=resource_id,
+        connect_elapsed_ms=_state_delta_ms(asr_state, "upstream_connect_started_at", "upstream_connect_at"),
+    )
+    async with upstream:
+        asr_state["upstream_ready_at"] = perf_counter()
+        _log_asr_event(asr_state, started, "upstream_init_ok", endpoint=endpoint, resource_id=resource_id)
+        await client.send_json({"type": "ready", "request_id": request_id, "provider": "xfyun"})
+        _log_asr_event(asr_state, started, "ready_sent", endpoint=endpoint, resource_id=resource_id)
+        browser_task = asyncio.create_task(_browser_to_xfyun(client, upstream, asr_state, started, endpoint, resource_id))
+        upstream_task = asyncio.create_task(_xfyun_to_browser(upstream, client, asr_state, started, endpoint, resource_id))
+        done, pending = await asyncio.wait({browser_task, upstream_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            try:
+                task.result()
+            except Exception as exc:
+                if not asr_state.get("close_error_detail"):
+                    asr_state["close_error_detail"] = _safe_error(exc)
+    _log_asr_event(asr_state, started, "relay_closed", endpoint=endpoint, resource_id=resource_id)
+    _log_asr_close(asr_state, started, status="closed", endpoint=endpoint, resource_id=resource_id)
+
+
+def _xfyun_signed_url(
+    *,
+    endpoint: str,
+    app_id: str,
+    access_key_id: str,
+    access_key_secret: str,
+    request_id: str,
+    lang: str,
+    sample_rate: int,
+) -> str:
+    utc = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+0800")
+    params: dict[str, str] = {
+        "accessKeyId": access_key_id,
+        "appId": app_id,
+        "audio_encode": "pcm_s16le",
+        "lang": lang or "autodialect",
+        "samplerate": str(sample_rate or 16000),
+        "utc": utc,
+        "uuid": request_id.replace("-", ""),
+    }
+    base_string = urlencode(sorted(params.items()))
+    signature = base64.b64encode(
+        hmac.new(access_key_secret.encode("utf-8"), base_string.encode("utf-8"), hashlib.sha1).digest()
+    ).decode("utf-8")
+    params["signature"] = signature
+    separator = "&" if "?" in endpoint else "?"
+    return endpoint + separator + urlencode(params)
+
+
+def _xfyun_connect_error(exc: Exception) -> str:
+    message = _safe_error(exc)
+    lowered = message.lower()
+    if "400" in message or "401" in message or "403" in message or "rejected" in lowered or "bad status" in lowered:
+        message += "。请确认讯飞 AppID、accessKeyId、accessKeySecret 正确，并已开通实时语音转写大模型。"
+    return f"连接讯飞 ASR 失败：{message}"
+
+
+async def _browser_to_xfyun(
+    client: WebSocket,
+    upstream: Any,
+    asr_state: dict[str, Any],
+    started: float,
+    endpoint: str,
+    resource_id: str,
+) -> None:
+    while True:
+        try:
+            message = await client.receive()
+        except WebSocketDisconnect as exc:
+            asr_state["client_disconnect_code"] = getattr(exc, "code", None)
+            asr_state["client_stop_reason"] = asr_state.get("client_stop_reason") or _asr_disconnect_reason(asr_state)
+            _log_asr_event(
+                asr_state,
+                started,
+                "client_disconnect",
+                endpoint=endpoint,
+                resource_id=resource_id,
+                client_disconnect_code=asr_state.get("client_disconnect_code"),
+                client_stop_reason=asr_state.get("client_stop_reason"),
+            )
+            break
+        if message.get("type") == "websocket.disconnect":
+            asr_state["client_stop_reason"] = asr_state.get("client_stop_reason") or _asr_disconnect_reason(asr_state)
+            _log_asr_event(
+                asr_state,
+                started,
+                "client_disconnect",
+                endpoint=endpoint,
+                resource_id=resource_id,
+                client_stop_reason=asr_state.get("client_stop_reason"),
+            )
+            break
+        if message.get("bytes") is not None:
+            chunk = message["bytes"] or b""
+            if not chunk:
+                continue
+            asr_state["audio_bytes_in"] = int(asr_state.get("audio_bytes_in", 0)) + len(chunk)
+            if not asr_state.get("first_browser_audio_at"):
+                asr_state["first_browser_audio_at"] = perf_counter()
+                _log_asr_event(
+                    asr_state,
+                    started,
+                    "first_browser_audio",
+                    endpoint=endpoint,
+                    resource_id=resource_id,
+                    audio_bytes=len(chunk),
+                    audio_bytes_in=asr_state["audio_bytes_in"],
+                )
+            near_zero = _is_near_zero_pcm16(chunk)
+            if near_zero:
+                asr_state["near_zero_audio_bytes_forwarded"] = int(asr_state.get("near_zero_audio_bytes_forwarded", 0)) + len(chunk)
+            now = perf_counter()
+            if not asr_state.get("first_forwarded_audio_at"):
+                ready_at = float(asr_state.get("upstream_ready_at") or 0.0)
+                asr_state["ready_to_first_audio_ms"] = int(max(0, (now - ready_at) * 1000)) if ready_at else None
+                asr_state["first_forwarded_audio_at"] = now
+                asr_state["first_audio_at"] = now
+                _log_asr_event(
+                    asr_state,
+                    started,
+                    "first_forwarded_audio",
+                    endpoint=endpoint,
+                    resource_id=resource_id,
+                    audio_bytes=len(chunk),
+                )
+            previous_forwarded_at = float(asr_state.get("last_forwarded_audio_at") or 0.0)
+            if previous_forwarded_at:
+                gap_ms = int(max(0, (now - previous_forwarded_at) * 1000))
+                asr_state["max_forward_audio_gap_ms"] = max(int(asr_state.get("max_forward_audio_gap_ms", 0)), gap_ms)
+                if gap_ms > ASR_FORWARD_AUDIO_GAP_WARN_MS:
+                    asr_state["large_audio_gap_count"] = int(asr_state.get("large_audio_gap_count", 0)) + 1
+                    asr_state["last_large_audio_gap_ms"] = gap_ms
+                    _log_asr_event(
+                        asr_state,
+                        started,
+                        "forwarded_audio_gap",
+                        endpoint=endpoint,
+                        resource_id=resource_id,
+                        gap_ms=gap_ms,
+                        audio_bytes=len(chunk),
+                        large_audio_gap_count=asr_state["large_audio_gap_count"],
+                    )
+            asr_state["last_audio_at"] = now
+            asr_state["last_forwarded_audio_at"] = now
+            asr_state["audio_bytes_forwarded"] = int(asr_state.get("audio_bytes_forwarded", 0)) + len(chunk)
+            asr_state["forwarded_packet_count"] = int(asr_state.get("forwarded_packet_count", 0)) + 1
+            await upstream.send(chunk)
+            continue
+        if message.get("text"):
+            try:
+                payload = json.loads(message["text"])
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "client_note":
+                reason = str(payload.get("reason") or "client_note")[:80]
+                asr_state["last_client_note_reason"] = reason
+                if "reconnect" in reason or "rotate" in reason:
+                    asr_state["reconnect_reason"] = reason
+                _log_asr_event(asr_state, started, _asr_client_note_event(reason), endpoint=endpoint, resource_id=resource_id, client_note_reason=reason)
+                continue
+            if payload.get("type") == "stop":
+                asr_state["client_stop_reason"] = str(payload.get("reason") or "client_stop")[:80]
+                _log_asr_event(asr_state, started, "client_stop", endpoint=endpoint, resource_id=resource_id, client_stop_reason=asr_state["client_stop_reason"])
+                try:
+                    await upstream.send(json.dumps({"end": True}, ensure_ascii=False))
+                except Exception:
+                    pass
+                break
+
+
+async def _xfyun_to_browser(
+    upstream: Any,
+    client: WebSocket,
+    asr_state: dict[str, Any],
+    started: float,
+    endpoint: str,
+    resource_id: str,
+) -> None:
+    try:
+        async for message in upstream:
+            parsed = _parse_xfyun_message(message, asr_state)
+            for item in parsed:
+                kind = item.get("type")
+                if kind == "partial" and not asr_state.get("logged_first_partial"):
+                    asr_state["logged_first_partial"] = True
+                    _log_asr_event(asr_state, started, "first_partial", endpoint=endpoint, resource_id=resource_id, **_asr_text_log_fields(item.get("text", "")))
+                elif kind == "final" and not asr_state.get("logged_first_final"):
+                    asr_state["logged_first_final"] = True
+                    _log_asr_event(asr_state, started, "first_final", endpoint=endpoint, resource_id=resource_id, **_asr_text_log_fields(item.get("text", "")))
+                elif kind == "error":
+                    if asr_state.get("asr_error_sent"):
+                        asr_state["duplicate_upstream_error_count"] = int(asr_state.get("duplicate_upstream_error_count", 0)) + 1
+                        continue
+                    asr_state["asr_error_sent"] = True
+                    _log_asr_event(
+                        asr_state,
+                        started,
+                        "upstream_server_error",
+                        endpoint=endpoint,
+                        resource_id=resource_id,
+                        error_type=asr_state.get("last_asr_error_type", "server_error"),
+                        **_asr_text_log_fields(item.get("message", ""), field="error"),
+                    )
+                    await client.send_json(item)
+                    return
+                await client.send_json(item)
+    finally:
+        close_code = getattr(upstream, "close_code", None)
+        close_reason = getattr(upstream, "close_reason", "")
+        if close_code is not None:
+            asr_state["upstream_close_code"] = close_code
+        if close_reason:
+            asr_state["upstream_close_reason"] = str(close_reason)[:120]
+        _log_asr_event(
+            asr_state,
+            started,
+            "upstream_closed",
+            endpoint=endpoint,
+            resource_id=resource_id,
+            upstream_close_code=asr_state.get("upstream_close_code"),
+            upstream_close_reason=asr_state.get("upstream_close_reason", ""),
+        )
+
+
+def _parse_xfyun_message(message: bytes | str, state: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = message.decode("utf-8", errors="ignore") if isinstance(message, bytes) else str(message or "")
+    if not raw.strip():
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    error_message = _xfyun_error_message(payload)
+    if error_message:
+        _remember_asr_error(state, error_message, error_type=_classify_asr_error(error_message, state))
+        return [{"type": "error", "message": error_message}]
+    text = _trim_cumulative_text(_extract_xfyun_text(payload), state)
+    if not text:
+        return []
+    final = _xfyun_is_final(payload)
+    if final:
+        key = (None, _optional_int(_deep_get(payload, ("data", "cn", "st", "ed"))), text)
+        sent_final_keys: set[tuple[int | None, int | None, str]] = state["sent_final_keys"]
+        if key in sent_final_keys:
+            return []
+        sent_final_keys.add(key)
+        _remember_final_text(state, text, end_time=key[1])
+        state["final_count"] = int(state.get("final_count", 0)) + 1
+        _mark_asr_emit(state, "final")
+        return [{"type": "final", "text": text, "end_time": key[1]}]
+    partial_key = (None, None, text)
+    if partial_key == state.get("last_partial_key"):
+        return []
+    state["last_partial_key"] = partial_key
+    state["last_partial_norm"] = _compact_text(text)
+    state["partial_count"] = int(state.get("partial_count", 0)) + 1
+    _mark_asr_emit(state, "partial")
+    return [{"type": "partial", "text": text}]
+
+
+def _xfyun_error_message(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    code = payload.get("code") or payload.get("status")
+    action = str(payload.get("action") or payload.get("msg_type") or "").lower()
+    if action in {"started", "result"} and (code in (None, 0, "0", "000000")):
+        return ""
+    if code not in (None, 0, "0", "000000"):
+        detail = _extract_error_text(json.dumps(payload, ensure_ascii=False))
+        return f"讯飞 ASR 返回错误：{detail or code}"
+    desc = str(payload.get("desc") or payload.get("message") or "").strip()
+    if action in {"error", "failed"} or desc.lower() in {"error", "failed"}:
+        return f"讯飞 ASR 返回错误：{desc or action}"
+    return ""
+
+
+def _extract_xfyun_text(payload: Any) -> str:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            pass
+    if not isinstance(data, dict):
+        data = payload if isinstance(payload, dict) else {}
+    st = _deep_get(data, ("cn", "st"))
+    if not isinstance(st, dict):
+        st = data.get("st") if isinstance(data.get("st"), dict) else data
+    words: list[str] = []
+    for rt in st.get("rt", []) if isinstance(st.get("rt"), list) else []:
+        for ws in rt.get("ws", []) if isinstance(rt, dict) and isinstance(rt.get("ws"), list) else []:
+            for cw in ws.get("cw", []) if isinstance(ws, dict) and isinstance(ws.get("cw"), list) else []:
+                if not isinstance(cw, dict):
+                    continue
+                word = str(cw.get("w") or "").strip()
+                if word:
+                    words.append(word)
+    if words:
+        return "".join(words).strip()
+    return _extract_text(payload)
+
+
+def _xfyun_is_final(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            data = {}
+    if not isinstance(data, dict):
+        data = payload
+    st = _deep_get(data, ("cn", "st"))
+    if not isinstance(st, dict):
+        st = data.get("st") if isinstance(data.get("st"), dict) else {}
+    if str(st.get("type") or "").strip() == "0":
+        return True
+    for key in ("ls", "final", "is_final", "isFinal"):
+        if _truthy(data.get(key) or payload.get(key)):
+            return True
+    action = str(payload.get("action") or payload.get("msg_type") or "").lower()
+    return action in {"ended", "completed"}
+
+
+def _deep_get(value: Any, path: tuple[str, ...]) -> Any:
+    item = value
+    for key in path:
+        if not isinstance(item, dict):
+            return None
+        item = item.get(key)
+    return item
 
 
 def _response_header(ws: Any, name: str) -> str:
@@ -954,7 +1398,7 @@ def _parse_server_message(
     text = payload.decode("utf-8", errors="ignore") if payload else ""
     if message_type == MESSAGE_TYPE_SERVER_ERROR:
         clean_error = _clean_asr_error(text)
-        _remember_asr_error(state, clean_error)
+        _remember_asr_error(state, clean_error, error_type=_classify_asr_error(clean_error, state))
         return [{"type": "error", "message": clean_error}]
     if message_type != MESSAGE_TYPE_FULL_SERVER_RESPONSE:
         return []
@@ -1314,8 +1758,10 @@ def _log_asr_event(
     logid: str = "",
     **fields: Any,
 ) -> None:
+    provider = str(state.get("provider") or "volc").strip() or "volc"
     payload: dict[str, Any] = {
-        "route": "volc_asr_event",
+        "route": f"{provider}_asr_event",
+        "provider": provider,
         "event": event,
         "request_id": state.get("request_id", ""),
         "elapsed_ms": _elapsed_ms(started),
@@ -1374,9 +1820,11 @@ def _log_asr_close(
     logid: str = "",
     error_type: str = "",
 ) -> None:
+    provider = str(state.get("provider") or "volc").strip() or "volc"
     _write_relay_log(
         {
-            "route": "volc_asr",
+            "route": f"{provider}_asr",
+            "provider": provider,
             "request_id": state.get("request_id", ""),
             "status": status,
             "elapsed_ms": _elapsed_ms(started),
@@ -1477,6 +1925,18 @@ def _clean_asr_error(text: str) -> str:
     return message.replace("\n", " ")[:180]
 
 
+def _classify_asr_error(message: str, state: dict[str, Any]) -> str:
+    lower = str(message or "").lower()
+    if "timeout" in lower or "超时" in str(message or ""):
+        ready_at = float(state.get("upstream_ready_at") or 0.0)
+        if ready_at and (perf_counter() - ready_at) >= 240:
+            return "upstream_session_timeout"
+        return "server_timeout"
+    if "session" in lower or "会话" in str(message or ""):
+        return "upstream_session_closed"
+    return "server_error"
+
+
 def _extract_error_text(raw: str) -> str:
     try:
         value = json.loads(raw)
@@ -1540,7 +2000,7 @@ def main() -> None:
         }
     )
     print(f"Serving public web app from {public_dir}")
-    print("Relay endpoints ready: /relay/health /relay/llm /relay/volc-tts /relay/volc-asr")
+    print("Relay endpoints ready: /relay/health /relay/llm /relay/volc-tts /relay/volc-asr /relay/xfyun-asr")
     uvicorn.run(app, host=args.host, port=args.port)
 
 
